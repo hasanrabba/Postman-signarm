@@ -14,7 +14,9 @@ export function Sidebar() {
   return (
     <aside className="w-72 shrink-0 border-r border-signal-border bg-signal-panel flex flex-col">
       <div className="p-3 border-b border-signal-border flex items-center gap-2">
-        <div className="font-bold text-white tracking-wider">signal</div>
+        <div className="font-bold text-white tracking-wider">
+          <span className="text-signal-accent">signarm</span> signal
+        </div>
         <div className="ml-auto text-[10px] text-signal-muted">v0.1</div>
       </div>
       <nav className="flex text-xs border-b border-signal-border">

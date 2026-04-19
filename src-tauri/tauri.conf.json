@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Signal",
+  "productName": "Signarm Signal",
   "version": "0.1.0",
-  "identifier": "com.signal.app",
+  "identifier": "com.signarm.signal",
   "build": {
     "beforeDevCommand": "npm run dev:web",
     "devUrl": "http://localhost:3000",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Signal",
+        "title": "Signarm Signal",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
@@ -35,10 +35,10 @@
       "icons/icon.ico"
     ],
     "category": "DeveloperTool",
-    "shortDescription": "API platform — build, test, mock, and document APIs.",
-    "longDescription": "Signal is a local-first API platform for designing, testing, mocking, and documenting HTTP APIs. All your collections, environments, and history stay on your machine.",
-    "publisher": "Signal",
-    "copyright": "Copyright © 2026",
+    "shortDescription": "Signarm Signal — API platform to build, test, mock, and document APIs.",
+    "longDescription": "Signarm Signal is a local-first API platform for designing, testing, mocking, and documenting HTTP APIs. All your collections, environments, and history stay on your machine.",
+    "publisher": "Signarm",
+    "copyright": "Copyright © 2026 Signarm",
     "windows": {
       "wix": {
         "language": ["en-US"]

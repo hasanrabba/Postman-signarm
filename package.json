@@ -1,8 +1,8 @@
 {
-  "name": "signal",
+  "name": "signarm-signal",
   "version": "0.1.0",
   "private": true,
-  "description": "Signal — an API platform: build, test, document, mock, and collaborate on APIs.",
+  "description": "Signarm Signal — an API platform: build, test, document, mock, and collaborate on APIs.",
   "scripts": {
     "dev": "next dev",
     "dev:web": "next dev",

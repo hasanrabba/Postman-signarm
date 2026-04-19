@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    signal_desktop_lib::run()
+    signarm_signal_lib::run()
 }

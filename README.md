@@ -1,10 +1,10 @@
-# Signal
+# Signarm Signal
 
 An API platform for designing, testing, mocking, and documenting APIs. Think of
 it as a Postman-alike that you run yourself — local-first, no sign-in, all your
 data stays in your browser.
 
-## What Signal does
+## What Signarm Signal does
 
 Feature parity with Postman's core workflows, plus a few additions.
 
@@ -60,11 +60,11 @@ Feature parity with Postman's core workflows, plus a few additions.
 ```
 
 Why a proxy? Browser `fetch` can't send arbitrary cross-origin requests thanks
-to CORS. The server-side proxy relays the call so Signal can hit any HTTP API.
+to CORS. The server-side proxy relays the call so Signarm Signal can hit any HTTP API.
 
 ## Run it
 
-Signal ships in two flavors from the same codebase.
+Signarm Signal ships in two flavors from the same codebase.
 
 ### Web (Next.js)
 
@@ -93,12 +93,12 @@ npm run build:desktop
 
 For convenience, a cross-compiled Windows build is checked in at `dist/`:
 
-- `dist/Signal.exe` (4.6 MB, PE32+)
+- `dist/SignarmSignal.exe` (~4.6 MB, PE32+)
 - `dist/WebView2Loader.dll` (160 KB)
 
 Copy both files together, install the WebView2 runtime if missing, and
-double-click `Signal.exe`. See `dist/README.md` for details and caveats
-(MinGW build — MSVC is preferred for Store submission).
+double-click `SignarmSignal.exe`. See `dist/README.md` for details and
+caveats (MinGW build — MSVC is preferred for Store submission).
 
 In the desktop build, `/api/proxy` and `/api/mock/*` are replaced with native
 Rust — `proxy_fetch` runs via `reqwest` (no CORS, no Node required) and the
@@ -121,9 +121,9 @@ Build artifacts:
 
 | File | Purpose |
 |---|---|
-| `src-tauri/target/release/Signal.exe` | raw executable |
-| `src-tauri/target/release/bundle/msi/Signal_0.1.0_x64_en-US.msi` | Windows Installer |
-| `src-tauri/target/release/bundle/nsis/Signal_0.1.0_x64-setup.exe` | NSIS installer |
+| `src-tauri/target/release/SignarmSignal.exe` | raw executable |
+| `src-tauri/target/release/bundle/msi/Signarm Signal_0.1.0_x64_en-US.msi` | Windows Installer |
+| `src-tauri/target/release/bundle/nsis/Signarm Signal_0.1.0_x64-setup.exe` | NSIS installer |
 
 ## Microsoft Store submission checklist
 
@@ -139,7 +139,7 @@ Pieces you need to supply before submission:
 
 - [ ] **Partner Center account** (<https://partner.microsoft.com/dashboard>,
       $19 one-time individual fee, $99 company)
-- [ ] **Reserved app name** in Partner Center (reserve "Signal" or your brand)
+- [ ] **Reserved app name** in Partner Center (reserve "Signarm Signal" or your brand)
 - [ ] **Publisher display name and CN** — update
       `src-tauri/tauri.conf.json` → `bundle.publisher` and
       `identifier` to match what Partner Center assigns

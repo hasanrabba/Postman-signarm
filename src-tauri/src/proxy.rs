@@ -171,7 +171,7 @@ pub async fn proxy_fetch(payload: ProxyPayload) -> Result<ProxyResponse, String>
 
     let client = match reqwest::Client::builder()
         .timeout(timeout)
-        .user_agent(concat!("Signal/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("SignarmSignal/", env!("CARGO_PKG_VERSION")))
         .build()
     {
         Ok(c) => c,

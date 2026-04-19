@@ -30,7 +30,7 @@ export default function Home() {
   if (!hydrated) {
     return (
       <div className="flex items-center justify-center h-screen text-signal-muted text-sm">
-        Loading Signal…
+        Loading Signarm Signal…
       </div>
     );
   }
