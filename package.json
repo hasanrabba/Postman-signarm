@@ -11,6 +11,7 @@
     "build:static": "node scripts/build-static.mjs",
     "build:desktop": "tauri build",
     "build:launcher": "node scripts/build-launcher.mjs",
+    "build:installer": "node scripts/build-installer.mjs",
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",

@@ -13,3 +13,5 @@ src-tauri/gen/schemas
 launcher/target
 launcher/payload/*.exe
 launcher/payload/*.dll
+installer/staging
+installer/SignarmSignal-Setup.exe

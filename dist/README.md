@@ -1,66 +1,61 @@
-# Signarm Signal — Windows executable
+# Signarm Signal — Windows binaries
 
-A **single-file** Windows binary for Signarm Signal.
+Two flavours of the same app. Most users want the installer.
 
-## Download
+| File | Size | What it does |
+|---|---|---|
+| `SignarmSignal-Setup.exe` | ~2.2 MB | **Proper installer.** UAC prompt → "Next → Next → Install" wizard. Drops the app in `Program Files\Signarm Signal\`, adds Start menu + optional Desktop shortcut, and registers with Settings → Apps → Installed apps so you can uninstall like any other Windows app. |
+| `SignarmSignal.exe` | ~5.5 MB | **Portable single-file build.** Double-click to run. Extracts itself under `%LOCALAPPDATA%\SignarmSignal\`. Good for USB drives or locked-down machines where you can't install software. |
 
-`SignarmSignal.exe` (~5.3 MB, PE32+ GUI)
+## Install it (recommended path)
 
-## Run it
+1. Download `SignarmSignal-Setup.exe`.
+2. Double-click. Windows SmartScreen will warn (unsigned, one-time) →
+   **More info → Run anyway**.
+3. UAC prompts for admin → **Yes**.
+4. Walk the wizard (Next → Install → Finish).
+   - Optional "Create a desktop shortcut" checkbox on the last screen.
+   - Optional "Launch Signarm Signal" checkbox on the last screen.
+5. From now on the app shows up in:
+   - **Start menu** → Signarm Signal → `Signarm Signal`
+   - **Settings → Apps → Installed apps** → Signarm Signal (click →
+     Uninstall)
+   - Desktop shortcut (if you ticked the box)
 
-Double-click the exe. That's it.
+WebView2 Runtime is detected automatically on first run; if it's not
+present the app will offer to install it from Microsoft (one-time).
 
-On first launch the wrapper:
+## Uninstall
 
-1. Checks the registry for **Microsoft Edge WebView2 Runtime**.
-   - WebView2 is a Microsoft-maintained Windows component, pre-installed
-     on Windows 11 and recent Windows 10 builds.
-   - On older systems where it's missing, you'll get a one-time prompt:
-     *"Signarm Signal needs Microsoft Edge WebView2. Download and
-     install it now?"* → click Yes and it installs silently (~30s).
-2. Extracts the real Tauri binary and `WebView2Loader.dll` to
-   `%LOCALAPPDATA%\SignarmSignal\<version>\` (idempotent; subsequent
-   runs skip this step).
-3. Launches the app and forwards the exit code.
+Either:
+- **Settings → Apps → Installed apps → Signarm Signal → Uninstall**, or
+- **Start menu → Signarm Signal → Uninstall Signarm Signal**
 
-### SmartScreen
+The uninstaller removes the program and shortcuts but **does not** wipe
+your collections, environments, history, and vault data
+(stored under `%LOCALAPPDATA%\SignarmSignal\…\WebView2`), so you can
+reinstall without losing anything. To wipe everything too:
 
-The binary is **unsigned**, so Windows SmartScreen will warn the first
-time. Click **More info → Run anyway**. For a signed build or Microsoft
-Store submission, follow the checklist in the top-level `README.md`.
+```cmd
+rd /s /q %LOCALAPPDATA%\SignarmSignal
+```
 
-## How the launcher works
+## Portable run
 
-Source: [`launcher/src/main.rs`](../launcher/src/main.rs)
+If you don't want to install:
 
-- `include_bytes!` embeds the real `SignarmSignal.exe` and
-  `WebView2Loader.dll` at compile time
-- Registry check for the WebView2 Runtime CLSID
-  (`{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`) under three hives:
-  `HKLM\…\EdgeUpdate\Clients\…`,
-  `HKLM\WOW6432Node\…` and `HKCU\…`
-- If missing: a one-liner PowerShell helper downloads Microsoft's
-  Evergreen Bootstrapper from `go.microsoft.com/fwlink/p/?LinkId=2124703`
-  and runs `MicrosoftEdgeWebview2Setup.exe /silent /install`
-- The launcher itself has no WebView2 dependency, so Windows loads it
-  cleanly before `main()` runs
-- Spawns the real binary via `std::process::Command` and propagates
-  stdout/exit code
+1. Download `SignarmSignal.exe`.
+2. Double-click. It unpacks to `%LOCALAPPDATA%\SignarmSignal\<version>\`
+   the first time and launches the app.
+3. No Start menu entry, no Add/Remove Programs entry.
 
-Adds ~350 KB over the raw payload for self-extraction + WebView2 detection
-and install.
+## Caveats
 
-## Caveats vs a Windows-native MSVC build
+Both builds are **unsigned**. SmartScreen will warn the first time. For
+Microsoft Store submission you'd need:
 
-This EXE was cross-compiled with `x86_64-pc-windows-gnu` (MinGW) from
-Linux. A Windows-native MSVC build (`x86_64-pc-windows-msvc`, via
-`npm run build:desktop` on a Windows host) will:
+- MSVC-native build (`npm run build:desktop` on a Windows host).
+- Code signing certificate.
+- MSIX packaging (not MSI/NSIS).
 
-- Be a few hundred KB smaller and a hair faster to start.
-- Produce `.msi` and NSIS `-setup.exe` installers for proper Add/Remove
-  Programs and Start-menu integration.
-- Be required if you want to sign it with a standard Windows code
-  signing certificate chain.
-
-For the Microsoft Store you will want the MSVC build plus MSIX
-packaging, not this raw launcher.
+Full checklist in the top-level `README.md`.

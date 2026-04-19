@@ -1,0 +1,49 @@
+// Produces dist/SignarmSignal-Setup.exe — a proper Windows installer that
+// drops Signarm Signal into %ProgramFiles%\Signarm Signal\, creates Start
+// menu and optional desktop shortcuts, and registers with Add/Remove
+// Programs so users can uninstall it from Settings.
+//
+// Pipeline:
+//   1. Ensure the single-file launcher exists (calls build-launcher.mjs).
+//   2. Stage SignarmSignal.exe + icon.ico into installer/staging/.
+//   3. Run makensis to produce SignarmSignal-Setup.exe.
+//   4. Copy the installer into dist/.
+//
+// Requires NSIS (`apt install nsis` on Debian/Ubuntu, choco install nsis on
+// Windows).
+
+import { execSync } from "node:child_process";
+import { cpSync, existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { join } from "node:path";
+
+const root = process.cwd();
+const run = (cmd, opts = {}) =>
+  execSync(cmd, { stdio: "inherit", cwd: root, env: process.env, ...opts });
+
+const launcherExe = join(root, "dist/SignarmSignal.exe");
+if (!existsSync(launcherExe)) {
+  console.log("[installer] launcher missing, building it first");
+  run("node scripts/build-launcher.mjs");
+}
+if (!existsSync(launcherExe)) {
+  throw new Error(`launcher still missing at ${launcherExe}`);
+}
+
+const staging = join(root, "installer/staging");
+if (existsSync(staging)) rmSync(staging, { recursive: true, force: true });
+mkdirSync(staging, { recursive: true });
+
+cpSync(launcherExe, join(staging, "SignarmSignal.exe"));
+cpSync(join(root, "src-tauri/icons/icon.ico"), join(staging, "icon.ico"));
+
+// makensis emits its output into the script's directory; run with that cwd.
+run("makensis -V2 signarm-signal.nsi", { cwd: join(root, "installer") });
+
+const produced = join(root, "installer/SignarmSignal-Setup.exe");
+if (!existsSync(produced)) {
+  throw new Error(`makensis did not produce ${produced}`);
+}
+const final = join(root, "dist/SignarmSignal-Setup.exe");
+renameSync(produced, final);
+
+console.log(`\ndone → ${final}`);
