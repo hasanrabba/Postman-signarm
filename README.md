@@ -92,11 +92,16 @@ npm run build:desktop
 ### Prebuilt Windows binary
 
 A cross-compiled **single-file** Windows build is checked in at
-`dist/SignarmSignal.exe` (~5.3 MB). It embeds the Tauri binary and
-`WebView2Loader.dll` via `launcher/src/main.rs` and extracts them to
-`%LOCALAPPDATA%\SignarmSignal\<version>\` on first run. Install the
-WebView2 runtime if missing, then double-click. See `dist/README.md`
-for caveats (MinGW build — MSVC is preferred for Store submission).
+`dist/SignarmSignal.exe` (~5.3 MB). It:
+
+- Embeds the Tauri binary and `WebView2Loader.dll` and extracts them to
+  `%LOCALAPPDATA%\SignarmSignal\<version>\` on first run.
+- **Auto-installs WebView2 Runtime** if it's missing (one-time Yes
+  prompt; uses Microsoft's Evergreen Bootstrapper via PowerShell).
+- Source: [`launcher/src/main.rs`](launcher/src/main.rs).
+
+Just double-click the exe. See `dist/README.md` for caveats (MinGW
+build — MSVC is preferred for Store submission).
 
 In the desktop build, `/api/proxy` and `/api/mock/*` are replaced with native
 Rust — `proxy_fetch` runs via `reqwest` (no CORS, no Node required) and the
