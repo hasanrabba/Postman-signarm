@@ -90,11 +90,27 @@ Section "Signarm Signal" SecMain
   ; Uninstaller
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
-  ; Start menu
+  ; Start menu — top-level shortcut so Windows 11 Start and Windows Search
+  ; surface "Signarm Signal" as a first-class result, plus a subfolder with
+  ; the uninstaller for users who go looking for it.
   SetShellVarContext all
+  CreateShortCut  "$SMPROGRAMS\${APPNAME}.lnk" "$INSTDIR\${APPEXE}" "" "$INSTDIR\icon.ico" 0
   CreateDirectory "$SMPROGRAMS\${APPNAME}"
-  CreateShortCut  "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk"  "$INSTDIR\${APPEXE}"   "" "$INSTDIR\${APPEXE}" 0
-  CreateShortCut  "$SMPROGRAMS\${APPNAME}\Uninstall ${APPNAME}.lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\uninstall.exe" 0
+  CreateShortCut  "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk" "$INSTDIR\${APPEXE}" "" "$INSTDIR\icon.ico" 0
+  CreateShortCut  "$SMPROGRAMS\${APPNAME}\Uninstall ${APPNAME}.lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\icon.ico" 0
+
+  ; App Paths — lets users type the exe name into the Run dialog (Win+R)
+  ; or Start search and have Windows resolve it to the install location.
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\App Paths\${APPEXE}" "" "$INSTDIR\${APPEXE}"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\App Paths\${APPEXE}" "Path" "$INSTDIR"
+
+  ; Explicit registration with RegisteredApplications so the Start menu
+  ; search indexer picks the app up quickly rather than waiting for a
+  ; background Start Menu scan.
+  WriteRegStr HKLM "Software\RegisteredApplications" "${APPNAME}" "Software\${PUBLISHER}\${APPNAME}\Capabilities"
+  WriteRegStr HKLM "Software\${PUBLISHER}\${APPNAME}\Capabilities" "ApplicationName"        "${APPNAME}"
+  WriteRegStr HKLM "Software\${PUBLISHER}\${APPNAME}\Capabilities" "ApplicationDescription" "${APPNAME} — API platform"
+  WriteRegStr HKLM "Software\${PUBLISHER}\${APPNAME}\Capabilities" "ApplicationIcon"        "$INSTDIR\icon.ico,0"
 
   ; Install path record
   WriteRegStr HKLM "Software\${PUBLISHER}\${APPNAME}" "InstallDir" "$INSTDIR"
@@ -121,6 +137,7 @@ SectionEnd
 Section "Uninstall"
   SetShellVarContext all
 
+  Delete "$SMPROGRAMS\${APPNAME}.lnk"
   Delete "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk"
   Delete "$SMPROGRAMS\${APPNAME}\Uninstall ${APPNAME}.lnk"
   RMDir  "$SMPROGRAMS\${APPNAME}"
@@ -135,6 +152,8 @@ Section "Uninstall"
 
   DeleteRegKey HKLM "${REG_UNINSTALL}"
   DeleteRegKey HKLM "Software\${PUBLISHER}\${APPNAME}"
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\App Paths\${APPEXE}"
+  DeleteRegValue HKLM "Software\RegisteredApplications" "${APPNAME}"
 
   ; Best-effort cleanup of per-user launcher cache. Leave the webview2
   ; user data (LocalStorage with the user's collections) untouched so

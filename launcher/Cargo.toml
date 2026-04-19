@@ -3,6 +3,7 @@ name = "signarm-signal-launcher"
 version = "0.1.0"
 edition = "2021"
 description = "Self-extracting single-file launcher for Signarm Signal"
+build = "build.rs"
 
 [[bin]]
 name = "SignarmSignal"
@@ -10,6 +11,9 @@ path = "src/main.rs"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+
+[build-dependencies]
+embed-resource = "2"
 
 [profile.release]
 panic = "abort"
