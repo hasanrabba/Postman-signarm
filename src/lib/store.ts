@@ -48,6 +48,8 @@ interface Store {
   renameCollection: (id: string, name: string) => void;
   deleteCollection: (id: string) => void;
   addFolder: (collectionId: string, parentFolderId: string, name: string) => string;
+  renameFolder: (collectionId: string, folderId: string, name: string) => void;
+  deleteFolder: (collectionId: string, folderId: string) => void;
   addRequest: (collectionId: string, folderId: string, template?: Partial<SignalRequest>) => string;
   renameRequest: (collectionId: string, requestId: string, name: string) => void;
   duplicateRequest: (collectionId: string, requestId: string) => string | undefined;
@@ -165,6 +167,61 @@ export const useStore = create<Store>()(
         });
         return fid;
       },
+      renameFolder: (collectionId, folderId, name) => set((s) => {
+        const c = s.collections[collectionId]; if (!c) return s;
+        const f = c.folders[folderId]; if (!f) return s;
+        return {
+          collections: {
+            ...s.collections,
+            [collectionId]: {
+              ...c,
+              folders: { ...c.folders, [folderId]: { ...f, name } },
+              updatedAt: Date.now(),
+            },
+          },
+        };
+      }),
+      /** Deletes a folder and every request/subfolder it contains.
+       *  The collection's root folder cannot be deleted. */
+      deleteFolder: (collectionId, folderId) => set((s) => {
+        const c = s.collections[collectionId]; if (!c) return s;
+        if (folderId === c.rootFolderId) return s;
+        const doomedFolders = new Set<string>();
+        const doomedRequests = new Set<string>();
+        const walk = (fid: string) => {
+          if (doomedFolders.has(fid)) return;
+          const f = c.folders[fid];
+          if (!f) return;
+          doomedFolders.add(fid);
+          for (const rid of f.requestIds) doomedRequests.add(rid);
+          for (const child of f.folderIds) walk(child);
+        };
+        walk(folderId);
+        const remainingFolders: Record<string, Folder> = {};
+        for (const [fid, f] of Object.entries(c.folders)) {
+          if (doomedFolders.has(fid)) continue;
+          remainingFolders[fid] = {
+            ...f,
+            folderIds: f.folderIds.filter((x) => !doomedFolders.has(x)),
+          };
+        }
+        const remainingRequests: Record<string, SignalRequest> = {};
+        for (const [rid, r] of Object.entries(c.requests)) {
+          if (!doomedRequests.has(rid)) remainingRequests[rid] = r;
+        }
+        return {
+          collections: {
+            ...s.collections,
+            [collectionId]: {
+              ...c,
+              folders: remainingFolders,
+              requests: remainingRequests,
+              updatedAt: Date.now(),
+            },
+          },
+          tabs: s.tabs.filter((t) => !doomedRequests.has(t.requestId)),
+        };
+      }),
       addRequest: (collectionId, folderId, template) => {
         const r = emptyRequest(template);
         set((s) => {

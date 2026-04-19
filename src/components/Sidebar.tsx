@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { useStore } from "@/lib/store";
 import type { Collection, Folder, Method, MockRoute, MockServer, SignalRequest } from "@/lib/types";
 import { uid } from "@/lib/id";
+import { EditableName } from "./EditableName";
 
 type Panel = "collections" | "environments" | "history" | "mocks";
 
@@ -90,8 +91,9 @@ function CollectionTree({
   onAddRequest: (folderId: string) => void;
   onOpen: (requestId: string) => void;
 }) {
-  const { commitCollectionVersion, addFolder } = useStore();
+  const { commitCollectionVersion, addFolder, renameCollection, deleteCollection } = useStore();
   const [open, setOpen] = useState(true);
+  const [menuOpen, setMenuOpen] = useState(false);
   const root = collection.folders[collection.rootFolderId];
 
   const matches = (r: SignalRequest) =>
@@ -99,9 +101,26 @@ function CollectionTree({
 
   return (
     <div className="border border-signal-border rounded">
-      <div className="flex items-center gap-1 px-2 py-1 bg-signal-bg">
+      <div
+        className="group flex items-center gap-1 px-2 py-1 bg-signal-bg relative"
+        onMouseLeave={() => setMenuOpen(false)}
+      >
         <button onClick={() => setOpen((o) => !o)} className="text-signal-muted w-4">{open ? "▾" : "▸"}</button>
-        <span className="font-medium text-white text-sm flex-1 truncate">{collection.name}</span>
+        <EditableName
+          value={collection.name}
+          onSave={(next) => renameCollection(collection.id, next)}
+          className="font-medium text-white text-sm flex-1 truncate"
+          inputClassName="input flex-1 !py-0 !text-sm font-medium"
+          ariaLabel={`Rename collection ${collection.name}`}
+        />
+        <button
+          className="text-xs text-signal-muted hover:text-white"
+          title="New folder"
+          onClick={() => {
+            const name = prompt("Folder name", "new folder");
+            if (name) addFolder(collection.id, collection.rootFolderId, name);
+          }}
+        >＋</button>
         <button
           className="text-xs text-signal-muted hover:text-white"
           title="Commit version"
@@ -111,13 +130,34 @@ function CollectionTree({
           }}
         >⎘</button>
         <button
-          className="text-xs text-signal-muted hover:text-white"
-          title="New folder"
-          onClick={() => {
-            const name = prompt("Folder name", "new folder");
-            if (name) addFolder(collection.id, collection.rootFolderId, name);
-          }}
-        >＋</button>
+          className="opacity-0 group-hover:opacity-100 text-signal-muted hover:text-white px-1"
+          title="More"
+          onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}
+        >⋯</button>
+        {menuOpen && (
+          <div
+            className="absolute right-2 top-7 z-10 bg-signal-panel border border-signal-border rounded shadow text-xs"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              className="block w-full text-left px-2 py-1 hover:bg-signal-bg"
+              onClick={() => {
+                const next = prompt("Rename collection", collection.name);
+                if (next && next.trim()) renameCollection(collection.id, next.trim());
+                setMenuOpen(false);
+              }}
+            >Rename</button>
+            <button
+              className="block w-full text-left px-2 py-1 hover:bg-signal-bg text-signal-err"
+              onClick={() => {
+                if (confirm(`Delete "${collection.name}" and everything in it?`)) {
+                  deleteCollection(collection.id);
+                }
+                setMenuOpen(false);
+              }}
+            >Delete</button>
+          </div>
+        )}
       </div>
       {open && (
         <FolderNode
@@ -141,7 +181,10 @@ function FolderNode({
   onOpen: (rid: string) => void;
   matches: (r: SignalRequest) => boolean;
 }) {
+  const { addFolder, renameFolder, deleteFolder } = useStore();
   const [open, setOpen] = useState(true);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const isRoot = folder.id === collection.rootFolderId;
   const subRequests = folder.requestIds
     .map((id) => collection.requests[id])
     .filter((r): r is SignalRequest => Boolean(r))
@@ -152,17 +195,68 @@ function FolderNode({
 
   return (
     <div className="pl-2">
-      <div className="flex items-center gap-1 px-1 py-0.5 text-sm">
-        <button onClick={() => setOpen((o) => !o)} className="w-4 text-signal-muted">{open ? "▾" : "▸"}</button>
-        <span className="flex-1 text-signal-muted truncate">{folder.name}</span>
-        <button
-          className="text-[11px] text-signal-muted hover:text-white"
-          onClick={() => onAddRequest(folder.id)}
-          title="Add request"
-        >+req</button>
-      </div>
+      {/* The collection's root folder has no visible row of its own — its
+          name is already the collection header. Show a row only for
+          non-root (nested) folders. */}
+      {!isRoot && (
+        <div
+          className="group flex items-center gap-1 px-1 py-0.5 text-sm relative"
+          onMouseLeave={() => setMenuOpen(false)}
+        >
+          <button onClick={() => setOpen((o) => !o)} className="w-4 text-signal-muted">{open ? "▾" : "▸"}</button>
+          <EditableName
+            value={folder.name}
+            onSave={(next) => renameFolder(collection.id, folder.id, next)}
+            className="flex-1 text-signal-muted truncate"
+            inputClassName="input flex-1 !py-0 !text-xs"
+            ariaLabel={`Rename folder ${folder.name}`}
+          />
+          <button
+            className="text-[11px] text-signal-muted hover:text-white"
+            onClick={() => onAddRequest(folder.id)}
+            title="Add request here"
+          >+req</button>
+          <button
+            className="text-[11px] text-signal-muted hover:text-white"
+            onClick={() => {
+              const name = prompt("New folder name", "subfolder");
+              if (name && name.trim()) addFolder(collection.id, folder.id, name.trim());
+            }}
+            title="Add subfolder"
+          >+fld</button>
+          <button
+            className="opacity-0 group-hover:opacity-100 text-signal-muted hover:text-white px-1"
+            onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}
+            title="More"
+          >⋯</button>
+          {menuOpen && (
+            <div
+              className="absolute right-1 top-6 z-10 bg-signal-panel border border-signal-border rounded shadow text-xs"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                className="block w-full text-left px-2 py-1 hover:bg-signal-bg"
+                onClick={() => {
+                  const next = prompt("Rename folder", folder.name);
+                  if (next && next.trim()) renameFolder(collection.id, folder.id, next.trim());
+                  setMenuOpen(false);
+                }}
+              >Rename</button>
+              <button
+                className="block w-full text-left px-2 py-1 hover:bg-signal-bg text-signal-err"
+                onClick={() => {
+                  if (confirm(`Delete folder "${folder.name}" and everything in it?`)) {
+                    deleteFolder(collection.id, folder.id);
+                  }
+                  setMenuOpen(false);
+                }}
+              >Delete</button>
+            </div>
+          )}
+        </div>
+      )}
       {open && (
-        <div className="pl-4">
+        <div className={isRoot ? "" : "pl-4"}>
           {subFolders.map((f) => (
             <FolderNode key={f.id} collection={collection} folder={f} onAddRequest={onAddRequest} onOpen={onOpen} matches={matches} />
           ))}

@@ -20,13 +20,18 @@ const root = process.cwd();
 const run = (cmd, opts = {}) =>
   execSync(cmd, { stdio: "inherit", cwd: root, env: process.env, ...opts });
 
+// Always rebuild the launcher. Cargo caches so this is fast when the
+// source hasn't changed, but we get a guaranteed-fresh artifact when it
+// has. Pass --skip-launcher to reuse an existing dist/SignarmSignal.exe
+// when debugging the installer in isolation.
 const launcherExe = join(root, "dist/SignarmSignal.exe");
-if (!existsSync(launcherExe)) {
-  console.log("[installer] launcher missing, building it first");
+if (process.argv.includes("--skip-launcher") && existsSync(launcherExe)) {
+  console.log("[installer] --skip-launcher: reusing existing launcher");
+} else {
   run("node scripts/build-launcher.mjs");
 }
 if (!existsSync(launcherExe)) {
-  throw new Error(`launcher still missing at ${launcherExe}`);
+  throw new Error(`launcher missing at ${launcherExe}`);
 }
 
 const staging = join(root, "installer/staging");
