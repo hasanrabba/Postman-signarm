@@ -10,3 +10,6 @@ next-env.d.ts
 src-tauri/target
 src-tauri/gen/schemas
 .api.stash
+launcher/target
+launcher/payload/*.exe
+launcher/payload/*.dll

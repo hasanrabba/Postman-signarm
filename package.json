@@ -10,6 +10,7 @@
     "build": "next build",
     "build:static": "node scripts/build-static.mjs",
     "build:desktop": "tauri build",
+    "build:launcher": "node scripts/build-launcher.mjs",
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
