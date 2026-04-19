@@ -11,7 +11,10 @@ interface ProxyPayload {
 }
 
 // Block SSRF to loopback/private networks at the proxy boundary.
+// Set SIGNAL_PROXY_ALLOW_LOCAL=1 to permit localhost/private ranges for
+// development or self-hosting against internal services.
 function isBlockedHost(hostname: string): boolean {
+  if (process.env.SIGNAL_PROXY_ALLOW_LOCAL === "1") return false;
   const h = hostname.toLowerCase();
   if (h === "localhost" || h === "127.0.0.1" || h === "::1") return true;
   if (h.endsWith(".localhost")) return true;

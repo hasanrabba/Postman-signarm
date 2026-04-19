@@ -15,7 +15,7 @@ import type {
   TestResult,
 } from "./types";
 import { uid } from "./id";
-import { emptyAuth } from "./auth";
+import { emptyRequest as emptyRequestDefault } from "./defaults";
 
 export interface TabState {
   id: string;
@@ -86,21 +86,7 @@ interface Store {
   deleteMock: (id: string) => void;
 }
 
-export function emptyRequest(overrides: Partial<SignalRequest> = {}): SignalRequest {
-  return {
-    id: uid("req"),
-    name: "Untitled request",
-    method: "GET",
-    url: "",
-    params: [],
-    headers: [],
-    auth: emptyAuth(),
-    body: { mode: "none", raw: "", urlencoded: [], formdata: [], graphql: { query: "", variables: "" } },
-    preRequestScript: "",
-    testScript: "",
-    ...overrides,
-  };
-}
+export const emptyRequest = emptyRequestDefault;
 
 function newCollection(name: string): Collection {
   const rootId = uid("fld");

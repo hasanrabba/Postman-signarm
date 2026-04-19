@@ -1,7 +1,23 @@
-import type { KeyValue, SignalRequest, SignalResponse, TestResult } from "./types";
+import type { Auth, KeyValue, SignalRequest, SignalResponse, TestResult } from "./types";
 import { applyAuth } from "./auth";
 import { resolveKV, resolveVars, type VarScope } from "./variables";
 import { runScript } from "./scripting";
+
+function resolveAuth(auth: Auth, scope: VarScope): Auth {
+  const r = (s?: string) => (s === undefined ? s : resolveVars(s, scope));
+  switch (auth.type) {
+    case "basic":
+      return { ...auth, basic: { username: r(auth.basic?.username) ?? "", password: r(auth.basic?.password) ?? "" } };
+    case "bearer":
+      return { ...auth, bearer: { token: r(auth.bearer?.token) ?? "" } };
+    case "apikey":
+      return { ...auth, apikey: { key: r(auth.apikey?.key) ?? "", value: r(auth.apikey?.value) ?? "", in: auth.apikey?.in ?? "header" } };
+    case "oauth2":
+      return { ...auth, oauth2: { accessToken: r(auth.oauth2?.accessToken) ?? "", tokenType: r(auth.oauth2?.tokenType) } };
+    default:
+      return auth;
+  }
+}
 
 export interface ExecuteOptions {
   scope: VarScope;
@@ -51,6 +67,7 @@ export async function executeRequest(
     params: resolveKV(original.params, scope),
     headers: resolveKV(original.headers, scope),
     body: resolveBody(original.body, scope),
+    auth: resolveAuth(original.auth, scope),
   };
   const final = applyAuth(resolved);
 
