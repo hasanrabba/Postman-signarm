@@ -17,7 +17,7 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
   const {
     updateDraft, setTabSending, setTabResponse, pushHistory,
     globals, environments, activeEnvId, collections, collectionOrder,
-    saveTabInPlace, saveDraft, findRequestLocation,
+    saveTabInPlace, saveDraft, findRequestLocation, createCollection,
   } = useStore();
   const draft = tab.draft;
   const [activeTab, setActiveTab] = useState<Tab>("params");
@@ -45,29 +45,34 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
   }, [tab.id, draft]);
 
   const save = () => {
-    // Try saving over the tracked request first.
+    // Already tracked under a collection — write back in place.
     if (saveTabInPlace(tab.id)) return;
-    // Otherwise prompt for a destination collection.
     const existingLoc = findRequestLocation(draft.id);
     if (existingLoc) {
       saveDraft(tab.id, existingLoc.collectionId, existingLoc.folderId);
       return;
     }
+    // Fresh draft. Pick the existing collection if there's only one so the
+    // user doesn't get a dialog. If there are several, prompt. If there are
+    // none, silently create "My Collection" — the store has a persistent
+    // layer so the user can rename it later.
+    let destination: string | undefined;
     if (collectionOrder.length === 0) {
-      alert("Create a collection first to save this request.");
-      return;
+      destination = createCollection("My Collection");
+    } else if (collectionOrder.length === 1) {
+      destination = collectionOrder[0];
+    } else {
+      const picked = prompt(
+        `Save into which collection?\n${collectionOrder.map((cid, i) => `${i + 1}) ${collections[cid]?.name}`).join("\n")}`,
+        "1"
+      );
+      if (!picked) return;
+      const idx = Number(picked) - 1;
+      destination = Number.isFinite(idx) ? collectionOrder[idx] : picked;
     }
-    const target = collectionOrder.length === 1
-      ? collectionOrder[0]
-      : prompt(
-          `Save into which collection?\n${collectionOrder.map((cid, i) => `${i + 1}) ${collections[cid]?.name}`).join("\n")}`,
-          "1"
-        );
-    const pick = typeof target === "string"
-      ? (Number.isFinite(Number(target)) ? collectionOrder[Number(target) - 1] : target)
-      : undefined;
-    if (!pick || !collections[pick]) return;
-    saveDraft(tab.id, pick, collections[pick].rootFolderId);
+    if (!destination || !useStore.getState().collections[destination]) return;
+    const col = useStore.getState().collections[destination];
+    saveDraft(tab.id, destination, col.rootFolderId);
   };
 
   const send = async () => {
