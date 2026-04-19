@@ -6,6 +6,7 @@ import { Tabs } from "@/components/Tabs";
 import { RequestBuilder } from "@/components/RequestBuilder";
 import { ResponseViewer } from "@/components/ResponseViewer";
 import { CommandPalette } from "@/components/CommandPalette";
+import { ConfirmDialogHost } from "@/components/ConfirmDialog";
 import { Runner } from "@/components/Runner";
 import { useStore } from "@/lib/store";
 
@@ -65,6 +66,7 @@ export default function Home() {
         )}
       </main>
       <CommandPalette />
+      <ConfirmDialogHost />
       {runner && <Runner collectionId={runner} onClose={() => setRunner(undefined)} />}
     </div>
   );

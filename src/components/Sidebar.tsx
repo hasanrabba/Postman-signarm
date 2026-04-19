@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useStore } from "@/lib/store";
 import type { Collection, Folder, Method, MockRoute, MockServer, SignalRequest } from "@/lib/types";
 import { uid } from "@/lib/id";
-import { EditableName } from "./EditableName";
+import { EditableName, type EditableNameHandle } from "./EditableName";
+import { confirmDialog } from "./ConfirmDialog";
 
 type Panel = "collections" | "environments" | "history" | "mocks";
 
@@ -93,20 +94,32 @@ function CollectionTree({
 }) {
   const { commitCollectionVersion, addFolder, renameCollection, deleteCollection } = useStore();
   const [open, setOpen] = useState(true);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const nameRef = useRef<EditableNameHandle | null>(null);
   const root = collection.folders[collection.rootFolderId];
 
   const matches = (r: SignalRequest) =>
     !search || r.name.toLowerCase().includes(search.toLowerCase()) || r.url.toLowerCase().includes(search.toLowerCase());
 
+  const handleDelete = async () => {
+    const ok = await confirmDialog({
+      title: "Delete collection",
+      message: `Delete "${collection.name}" and everything inside it?\n\nThis cannot be undone.`,
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (ok) deleteCollection(collection.id);
+  };
+
   return (
     <div className="border border-signal-border rounded">
-      <div
-        className="group flex items-center gap-1 px-2 py-1 bg-signal-bg relative"
-        onMouseLeave={() => setMenuOpen(false)}
-      >
-        <button onClick={() => setOpen((o) => !o)} className="text-signal-muted w-4">{open ? "▾" : "▸"}</button>
+      <div className="flex items-center gap-1 px-2 py-1 bg-signal-bg relative">
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="text-signal-muted w-4"
+          aria-label={open ? "Collapse collection" : "Expand collection"}
+        >{open ? "▾" : "▸"}</button>
         <EditableName
+          ref={nameRef}
           value={collection.name}
           onSave={(next) => renameCollection(collection.id, next)}
           className="font-medium text-white text-sm flex-1 truncate"
@@ -114,50 +127,29 @@ function CollectionTree({
           ariaLabel={`Rename collection ${collection.name}`}
         />
         <button
-          className="text-xs text-signal-muted hover:text-white"
+          className="text-xs text-signal-muted hover:text-white px-1"
+          title="Rename"
+          aria-label={`Rename collection ${collection.name}`}
+          onClick={(e) => { e.stopPropagation(); nameRef.current?.startEditing(); }}
+        >✎</button>
+        <button
+          className="text-xs text-signal-muted hover:text-white px-1"
           title="New folder"
-          onClick={() => {
-            const name = prompt("Folder name", "new folder");
-            if (name) addFolder(collection.id, collection.rootFolderId, name);
-          }}
+          aria-label="Add folder to collection"
+          onClick={() => addFolder(collection.id, collection.rootFolderId, "new folder")}
         >＋</button>
         <button
-          className="text-xs text-signal-muted hover:text-white"
+          className="text-xs text-signal-muted hover:text-white px-1"
           title="Commit version"
-          onClick={() => {
-            const msg = prompt("Commit message", "checkpoint");
-            if (msg) commitCollectionVersion(collection.id, msg);
-          }}
+          aria-label="Commit collection version"
+          onClick={() => void commitCollectionVersion(collection.id, new Date().toISOString())}
         >⎘</button>
         <button
-          className="opacity-0 group-hover:opacity-100 text-signal-muted hover:text-white px-1"
-          title="More"
-          onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}
-        >⋯</button>
-        {menuOpen && (
-          <div
-            className="absolute right-2 top-7 z-10 bg-signal-panel border border-signal-border rounded shadow text-xs"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              className="block w-full text-left px-2 py-1 hover:bg-signal-bg"
-              onClick={() => {
-                const next = prompt("Rename collection", collection.name);
-                if (next && next.trim()) renameCollection(collection.id, next.trim());
-                setMenuOpen(false);
-              }}
-            >Rename</button>
-            <button
-              className="block w-full text-left px-2 py-1 hover:bg-signal-bg text-signal-err"
-              onClick={() => {
-                if (confirm(`Delete "${collection.name}" and everything in it?`)) {
-                  deleteCollection(collection.id);
-                }
-                setMenuOpen(false);
-              }}
-            >Delete</button>
-          </div>
-        )}
+          className="text-xs text-signal-muted hover:text-signal-err px-1"
+          title="Delete collection"
+          aria-label={`Delete collection ${collection.name}`}
+          onClick={handleDelete}
+        >✕</button>
       </div>
       {open && (
         <FolderNode
@@ -183,7 +175,7 @@ function FolderNode({
 }) {
   const { addFolder, renameFolder, deleteFolder } = useStore();
   const [open, setOpen] = useState(true);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const nameRef = useRef<EditableNameHandle | null>(null);
   const isRoot = folder.id === collection.rootFolderId;
   const subRequests = folder.requestIds
     .map((id) => collection.requests[id])
@@ -193,18 +185,30 @@ function FolderNode({
     .map((id) => collection.folders[id])
     .filter((f): f is Folder => Boolean(f));
 
+  const handleDelete = async () => {
+    const ok = await confirmDialog({
+      title: "Delete folder",
+      message: `Delete folder "${folder.name}" and everything inside it?\n\nThis cannot be undone.`,
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (ok) deleteFolder(collection.id, folder.id);
+  };
+
   return (
     <div className="pl-2">
       {/* The collection's root folder has no visible row of its own — its
           name is already the collection header. Show a row only for
           non-root (nested) folders. */}
       {!isRoot && (
-        <div
-          className="group flex items-center gap-1 px-1 py-0.5 text-sm relative"
-          onMouseLeave={() => setMenuOpen(false)}
-        >
-          <button onClick={() => setOpen((o) => !o)} className="w-4 text-signal-muted">{open ? "▾" : "▸"}</button>
+        <div className="flex items-center gap-1 px-1 py-0.5 text-sm relative">
+          <button
+            onClick={() => setOpen((o) => !o)}
+            className="w-4 text-signal-muted"
+            aria-label={open ? "Collapse folder" : "Expand folder"}
+          >{open ? "▾" : "▸"}</button>
           <EditableName
+            ref={nameRef}
             value={folder.name}
             onSave={(next) => renameFolder(collection.id, folder.id, next)}
             className="flex-1 text-signal-muted truncate"
@@ -212,47 +216,29 @@ function FolderNode({
             ariaLabel={`Rename folder ${folder.name}`}
           />
           <button
-            className="text-[11px] text-signal-muted hover:text-white"
+            className="text-[11px] text-signal-muted hover:text-white px-1"
+            onClick={(e) => { e.stopPropagation(); nameRef.current?.startEditing(); }}
+            title="Rename folder"
+            aria-label={`Rename folder ${folder.name}`}
+          >✎</button>
+          <button
+            className="text-[11px] text-signal-muted hover:text-white px-1"
             onClick={() => onAddRequest(folder.id)}
             title="Add request here"
+            aria-label="Add request to folder"
           >+req</button>
           <button
-            className="text-[11px] text-signal-muted hover:text-white"
-            onClick={() => {
-              const name = prompt("New folder name", "subfolder");
-              if (name && name.trim()) addFolder(collection.id, folder.id, name.trim());
-            }}
+            className="text-[11px] text-signal-muted hover:text-white px-1"
+            onClick={() => addFolder(collection.id, folder.id, "subfolder")}
             title="Add subfolder"
+            aria-label="Add subfolder"
           >+fld</button>
           <button
-            className="opacity-0 group-hover:opacity-100 text-signal-muted hover:text-white px-1"
-            onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}
-            title="More"
-          >⋯</button>
-          {menuOpen && (
-            <div
-              className="absolute right-1 top-6 z-10 bg-signal-panel border border-signal-border rounded shadow text-xs"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <button
-                className="block w-full text-left px-2 py-1 hover:bg-signal-bg"
-                onClick={() => {
-                  const next = prompt("Rename folder", folder.name);
-                  if (next && next.trim()) renameFolder(collection.id, folder.id, next.trim());
-                  setMenuOpen(false);
-                }}
-              >Rename</button>
-              <button
-                className="block w-full text-left px-2 py-1 hover:bg-signal-bg text-signal-err"
-                onClick={() => {
-                  if (confirm(`Delete folder "${folder.name}" and everything in it?`)) {
-                    deleteFolder(collection.id, folder.id);
-                  }
-                  setMenuOpen(false);
-                }}
-              >Delete</button>
-            </div>
-          )}
+            className="text-[11px] text-signal-muted hover:text-signal-err px-1"
+            onClick={handleDelete}
+            title="Delete folder"
+            aria-label={`Delete folder ${folder.name}`}
+          >✕</button>
         </div>
       )}
       {open && (
@@ -277,57 +263,56 @@ function RequestItem({
   onOpen: (id: string) => void;
 }) {
   const { renameRequest, duplicateRequest, deleteRequest, openRequest } = useStore();
-  const [showMenu, setShowMenu] = useState(false);
+  const nameRef = useRef<EditableNameHandle | null>(null);
+
+  const handleDelete = async () => {
+    const ok = await confirmDialog({
+      title: "Delete request",
+      message: `Delete "${request.name || request.url || "(untitled)"}"?\n\nThis cannot be undone.`,
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (ok) deleteRequest(collection.id, request.id);
+  };
+
   return (
-    <div
-      className="group flex items-center gap-2 w-full text-xs hover:bg-signal-bg rounded pr-1"
-      onMouseLeave={() => setShowMenu(false)}
-    >
+    <div className="flex items-center gap-1 w-full text-xs hover:bg-signal-bg rounded pr-1">
       <button
-        className="flex items-center gap-2 flex-1 text-left px-1 py-0.5 min-w-0"
+        className={`method-pill method-${request.method}`}
         onClick={() => onOpen(request.id)}
+        aria-label={`Open ${request.name || request.url}`}
       >
-        <span className={`method-pill method-${request.method}`}>{request.method}</span>
-        <span className="truncate text-slate-200">{request.name || request.url || "(untitled)"}</span>
+        {request.method}
       </button>
-      <div className="relative">
-        <button
-          className="opacity-0 group-hover:opacity-100 text-signal-muted hover:text-white px-1"
-          onClick={(e) => { e.stopPropagation(); setShowMenu((v) => !v); }}
-        >⋯</button>
-        {showMenu && (
-          <div
-            className="absolute right-0 top-5 z-10 bg-signal-panel border border-signal-border rounded shadow text-xs"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              className="block w-full text-left px-2 py-1 hover:bg-signal-bg"
-              onClick={() => {
-                const next = prompt("Rename request", request.name);
-                if (next !== null) renameRequest(collection.id, request.id, next);
-                setShowMenu(false);
-              }}
-            >Rename</button>
-            <button
-              className="block w-full text-left px-2 py-1 hover:bg-signal-bg"
-              onClick={() => {
-                const dupId = duplicateRequest(collection.id, request.id);
-                if (dupId) openRequest(collection.id, dupId);
-                setShowMenu(false);
-              }}
-            >Duplicate</button>
-            <button
-              className="block w-full text-left px-2 py-1 hover:bg-signal-bg text-signal-err"
-              onClick={() => {
-                if (confirm(`Delete "${request.name || request.url}"?`)) {
-                  deleteRequest(collection.id, request.id);
-                }
-                setShowMenu(false);
-              }}
-            >Delete</button>
-          </div>
-        )}
-      </div>
+      <EditableName
+        ref={nameRef}
+        value={request.name || request.url || "(untitled)"}
+        onSave={(next) => renameRequest(collection.id, request.id, next)}
+        className="flex-1 text-left px-1 py-0.5 min-w-0 truncate text-slate-200 cursor-pointer"
+        inputClassName="input flex-1 !py-0 !text-xs"
+        ariaLabel={`Rename request ${request.name || request.url}`}
+      />
+      <button
+        className="text-signal-muted hover:text-white px-1"
+        onClick={(e) => { e.stopPropagation(); nameRef.current?.startEditing(); }}
+        title="Rename request"
+        aria-label={`Rename request ${request.name || request.url}`}
+      >✎</button>
+      <button
+        className="text-signal-muted hover:text-white px-1"
+        onClick={() => {
+          const dupId = duplicateRequest(collection.id, request.id);
+          if (dupId) openRequest(collection.id, dupId);
+        }}
+        title="Duplicate"
+        aria-label="Duplicate request"
+      >⧉</button>
+      <button
+        className="text-signal-muted hover:text-signal-err px-1"
+        onClick={handleDelete}
+        title="Delete request"
+        aria-label={`Delete request ${request.name || request.url}`}
+      >✕</button>
     </div>
   );
 }
