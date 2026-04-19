@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html, body {
+  background: #0b0d12;
+  color: #e5e7eb;
+  height: 100%;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #1f242e; border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: #2a3140; }
+
+.method-pill {
+  @apply px-2 py-0.5 rounded text-xs font-bold tracking-wide;
+}
+.method-GET    { @apply text-emerald-400 bg-emerald-400/10; }
+.method-POST   { @apply text-amber-400 bg-amber-400/10; }
+.method-PUT    { @apply text-blue-400 bg-blue-400/10; }
+.method-PATCH  { @apply text-violet-400 bg-violet-400/10; }
+.method-DELETE { @apply text-rose-400 bg-rose-400/10; }
+.method-HEAD, .method-OPTIONS { @apply text-slate-400 bg-slate-400/10; }
+
+.tab {
+  @apply px-3 py-1.5 text-sm text-slate-300 hover:text-white border-b-2 border-transparent;
+}
+.tab-active {
+  @apply text-white border-signal-accent;
+}
+
+.btn {
+  @apply px-3 py-1.5 rounded text-sm bg-signal-panel border border-signal-border hover:border-signal-accent transition-colors;
+}
+.btn-primary {
+  @apply px-4 py-1.5 rounded text-sm font-medium bg-signal-accent text-white hover:brightness-110 transition;
+}
+.input {
+  @apply bg-signal-bg border border-signal-border rounded px-2 py-1 text-sm font-mono w-full focus:outline-none focus:border-signal-accent;
+}
+.kbd {
+  @apply inline-block px-1.5 py-0.5 rounded text-[10px] bg-signal-panel border border-signal-border text-slate-400;
+}
