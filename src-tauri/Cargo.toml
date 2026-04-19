@@ -28,6 +28,15 @@ base64 = "0.22"
 url = "2"
 parking_lot = "0.12"
 
+[features]
+# Tauri uses this feature to decide whether to serve the bundled frontend
+# through the custom `tauri://` protocol (release builds) or fall back to
+# the dev URL. Without `custom-protocol` enabled, the release binary tries
+# to connect to http://localhost:3000 and the window shows
+# "ERR_CONNECTION_REFUSED".
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
 [profile.release]
 panic = "abort"
 codegen-units = 1
