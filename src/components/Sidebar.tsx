@@ -383,14 +383,9 @@ function MockServerEditor({
 
   const sync = async () => {
     setSyncing("idle");
-    try {
-      const res = await fetch("/api/mock-config", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mockId: server.id, routes: server.routes }),
-      });
-      setSyncing(res.ok ? "ok" : "error");
-    } catch { setSyncing("error"); }
+    const { registerMock } = await import("@/lib/transport");
+    const res = await registerMock(server.id, server.routes);
+    setSyncing(res.ok ? "ok" : "error");
   };
 
   const addRoute = () => {

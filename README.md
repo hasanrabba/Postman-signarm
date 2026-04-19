@@ -64,18 +64,101 @@ to CORS. The server-side proxy relays the call so Signal can hit any HTTP API.
 
 ## Run it
 
+Signal ships in two flavors from the same codebase.
+
+### Web (Next.js)
+
 ```bash
 npm install
-npm run dev
-# then open http://localhost:3000
+npm run dev          # http://localhost:3000
+# or for production
+npm run build && npm start
 ```
 
-Build for production:
+### Desktop (Tauri, Windows/macOS/Linux)
 
 ```bash
-npm run build
-npm start
+npm install
+npm run dev:desktop  # hot-reloading desktop window
 ```
+
+Produce an installer:
+
+```bash
+npm run build:desktop
+# outputs in src-tauri/target/release/bundle/
+```
+
+In the desktop build, `/api/proxy` and `/api/mock/*` are replaced with native
+Rust — `proxy_fetch` runs via `reqwest` (no CORS, no Node required) and the
+mock server is an embedded Tokio listener on a random loopback port. A tiny
+transport shim (`src/lib/transport.ts`) picks the right backend at runtime.
+
+### Windows prerequisites
+
+On the Windows machine where you run `npm run build:desktop`:
+
+1. **Rust** — install via <https://rustup.rs>; add the MSVC target with
+   `rustup default stable-msvc`
+2. **Microsoft Visual Studio Build Tools 2022** with the "Desktop development
+   with C++" workload (for the MSVC linker)
+3. **WebView2 Runtime** — pre-installed on Windows 11, auto-installed by the
+   MSI on Windows 10
+4. **Node.js 20+**
+
+Build artifacts:
+
+| File | Purpose |
+|---|---|
+| `src-tauri/target/release/Signal.exe` | raw executable |
+| `src-tauri/target/release/bundle/msi/Signal_0.1.0_x64_en-US.msi` | Windows Installer |
+| `src-tauri/target/release/bundle/nsis/Signal_0.1.0_x64-setup.exe` | NSIS installer |
+
+## Microsoft Store submission checklist
+
+Pieces shipped in this repo:
+
+- [x] Application code (Tauri + Rust backend)
+- [x] `tauri.conf.json` with app identifier, publisher, version, category
+- [x] Icons (32/128/256 px PNG + multi-size ICO)
+- [x] MSI installer target configured
+- [x] CSP and Tauri capability allowlist
+
+Pieces you need to supply before submission:
+
+- [ ] **Partner Center account** (<https://partner.microsoft.com/dashboard>,
+      $19 one-time individual fee, $99 company)
+- [ ] **Reserved app name** in Partner Center (reserve "Signal" or your brand)
+- [ ] **Publisher display name and CN** — update
+      `src-tauri/tauri.conf.json` → `bundle.publisher` and
+      `identifier` to match what Partner Center assigns
+- [ ] **App icons** — replace the placeholder gradient icons in
+      `src-tauri/icons/` with your real brand artwork (include Store logo
+      sizes: 50×50, 150×150, 310×310, 310×150)
+- [ ] **MSIX package** — the Store prefers MSIX over MSI. Either add
+      `"msix"` to `bundle.targets` in `tauri.conf.json` (Tauri v2 bundles
+      MSIX when the `wix` tool is available) or wrap the produced MSI with
+      the **MSIX Packaging Tool** from the Microsoft Store
+- [ ] **Code signing certificate** — Store submissions must be signed.
+      Options: Store-issued certificate (simplest; happens automatically on
+      upload), EV code signing cert, or SmartScreen-reputable standard cert
+- [ ] **Privacy policy URL** — required for any app that handles user data
+- [ ] **Age rating** via IARC questionnaire (runs in Partner Center)
+- [ ] **Store listing**: description, screenshots (min 1 at 1366×768 or
+      larger), feature list, support contact
+- [ ] **Windows App Certification Kit pass** — run WACK locally against the
+      MSI/MSIX, fix any failures, attach the result to the submission
+
+### Recommended submission flow
+
+1. `npm run build:desktop` on a Windows machine → produces `.msi`
+2. Open **MSIX Packaging Tool** → "Create package from installer" → point
+   at the MSI → produces `.msix`
+3. Run **Windows App Certification Kit** against the MSIX; iterate
+4. Sign in to **Partner Center** → Apps and games → New product → MSIX or
+   PWA app → upload the package
+5. Fill in the listing (description, screenshots, categorization) and
+   submit for certification (usually 1–3 business days)
 
 ## Source map
 

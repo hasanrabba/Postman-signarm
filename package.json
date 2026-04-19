@@ -5,19 +5,27 @@
   "description": "Signal — an API platform: build, test, document, mock, and collaborate on APIs.",
   "scripts": {
     "dev": "next dev",
+    "dev:web": "next dev",
+    "dev:desktop": "tauri dev",
     "build": "next build",
+    "build:static": "node scripts/build-static.mjs",
+    "build:desktop": "tauri build",
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "tauri": "tauri"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-http": "^2.5.8",
     "next": "15.5.15",
     "react": "19.0.0",
     "react-dom": "19.0.0",
     "zustand": "5.0.1"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1",
     "@types/node": "22.9.0",
     "@types/react": "19.0.0",
     "@types/react-dom": "19.0.0",

@@ -2,6 +2,7 @@ import type { Auth, KeyValue, SignalRequest, SignalResponse, TestResult } from "
 import { applyAuth } from "./auth";
 import { resolveKV, resolveVars, type VarScope } from "./variables";
 import { runScript } from "./scripting";
+import { sendProxy } from "./transport";
 
 function resolveAuth(auth: Auth, scope: VarScope): Auth {
   const r = (s?: string) => (s === undefined ? s : resolveVars(s, scope));
@@ -71,20 +72,25 @@ export async function executeRequest(
   };
   const final = applyAuth(resolved);
 
-  // 3. send via proxy — serializeForProxy may auto-add Content-Type etc.; fold
-  // those back into `final.headers` so consumers can see the actual headers
-  // that were sent (history, UI, test harness).
+  // 3. send via transport — serializeForProxy may auto-add Content-Type etc.;
+  // fold those back into `final.headers` so consumers can see the actual
+  // headers that were sent (history, UI, test harness).
   const payload = serializeForProxy(final);
   mergeHeadersInto(final, payload.headers);
   const t0 = performance.now();
   let response: SignalResponse;
   try {
-    const res = await fetch(opts.proxyUrl ?? "/api/proxy", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    response = (await res.json()) as SignalResponse;
+    if (opts.proxyUrl) {
+      // Explicit override (used by the Node e2e harness).
+      const res = await fetch(opts.proxyUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      response = (await res.json()) as SignalResponse;
+    } else {
+      response = await sendProxy(payload);
+    }
     response.elapsedMs = Math.round(performance.now() - t0);
   } catch (e) {
     response = {
