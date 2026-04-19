@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useStore, type TabState } from "@/lib/store";
 import type { AuthType, BodyMode, Method, SignalRequest } from "@/lib/types";
 import { KVEditor } from "./KVEditor";
@@ -14,7 +14,11 @@ const BODY_MODES: BodyMode[] = ["none", "json", "text", "xml", "form-urlencoded"
 type Tab = "params" | "auth" | "headers" | "body" | "pre" | "tests" | "snippets" | "docs";
 
 export function RequestBuilder({ tab }: { tab: TabState }) {
-  const { updateDraft, setTabSending, setTabResponse, pushHistory, globals, environments, activeEnvId, collections } = useStore();
+  const {
+    updateDraft, setTabSending, setTabResponse, pushHistory,
+    globals, environments, activeEnvId, collections, collectionOrder,
+    saveTabInPlace, saveDraft, findRequestLocation,
+  } = useStore();
   const draft = tab.draft;
   const [activeTab, setActiveTab] = useState<Tab>("params");
 
@@ -22,6 +26,49 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
     () => Object.values(collections).find((c) => Object.prototype.hasOwnProperty.call(c.requests, draft.id)),
     [collections, draft.id]
   );
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const isMac = /Mac/.test(navigator.platform);
+      if ((isMac ? e.metaKey : e.ctrlKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        save();
+      }
+      if ((isMac ? e.metaKey : e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        void send();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab.id, draft]);
+
+  const save = () => {
+    // Try saving over the tracked request first.
+    if (saveTabInPlace(tab.id)) return;
+    // Otherwise prompt for a destination collection.
+    const existingLoc = findRequestLocation(draft.id);
+    if (existingLoc) {
+      saveDraft(tab.id, existingLoc.collectionId, existingLoc.folderId);
+      return;
+    }
+    if (collectionOrder.length === 0) {
+      alert("Create a collection first to save this request.");
+      return;
+    }
+    const target = collectionOrder.length === 1
+      ? collectionOrder[0]
+      : prompt(
+          `Save into which collection?\n${collectionOrder.map((cid, i) => `${i + 1}) ${collections[cid]?.name}`).join("\n")}`,
+          "1"
+        );
+    const pick = typeof target === "string"
+      ? (Number.isFinite(Number(target)) ? collectionOrder[Number(target) - 1] : target)
+      : undefined;
+    if (!pick || !collections[pick]) return;
+    saveDraft(tab.id, pick, collections[pick].rootFolderId);
+  };
 
   const send = async () => {
     setTabSending(tab.id, true);
@@ -75,6 +122,12 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
           onClick={send}
           disabled={tab.sending || !draft.url}
         >{tab.sending ? "Sending…" : "Send"}</button>
+        <button
+          className="btn"
+          onClick={save}
+          disabled={!tab.dirty}
+          title={tab.dirty ? "Save changes (Cmd/Ctrl+S)" : "No changes"}
+        >Save</button>
       </div>
 
       <nav className="flex gap-1 border-b border-signal-border bg-signal-panel px-2">

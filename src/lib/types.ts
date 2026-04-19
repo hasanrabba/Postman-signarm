@@ -90,6 +90,7 @@ export interface SignalResponse {
   timings?: Record<string, number>;
   error?: string;
   contentType?: string;
+  finalUrl?: string;
 }
 
 export interface HistoryEntry {

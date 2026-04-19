@@ -3,12 +3,15 @@
 import { useState } from "react";
 import { useStore } from "@/lib/store";
 import { executeRequest } from "@/lib/executor";
-import type { SignalResponse, TestResult } from "@/lib/types";
+import type { KeyValue, SignalResponse, SignalRequest, TestResult } from "@/lib/types";
+import { uid } from "@/lib/id";
 
 /**
  * Collection runner: sequentially executes every request in a collection and
- * aggregates test results. Useful for quick smoke suites. Newman-compatible
- * export is left as future work.
+ * aggregates test results. State mutations performed by scripts (sg.env.set,
+ * sg.globals.set, sg.collection.set) are threaded into each subsequent
+ * request so a login request can capture a token and the next request can
+ * use it — matching Postman's runner semantics.
  */
 export function Runner({ collectionId, onClose }: { collectionId: string; onClose: () => void }) {
   const { collections, environments, activeEnvId, globals } = useStore();
@@ -21,14 +24,25 @@ export function Runner({ collectionId, onClose }: { collectionId: string; onClos
   const run = async () => {
     setRunning(true);
     setRows([]);
-    const scope = {
-      global: globals,
-      environment: activeEnvId ? environments[activeEnvId]?.variables : undefined,
-      collection: col.variables,
-    };
-    const requests = Object.values(col.requests);
+
+    const envOverrides: Record<string, string> = {};
+    const globalOverrides: Record<string, string> = {};
+    const collectionOverrides: Record<string, string> = {};
+
+    const requests = flatten(col);
     for (const r of requests) {
+      const scope = {
+        global: mergeKV(globals, globalOverrides),
+        environment: mergeKV(
+          activeEnvId ? environments[activeEnvId]?.variables : undefined,
+          envOverrides
+        ),
+        collection: mergeKV(col.variables, collectionOverrides),
+      };
       const res = await executeRequest(r, { scope });
+      Object.assign(envOverrides, res.envUpdates);
+      Object.assign(globalOverrides, res.globalUpdates);
+      Object.assign(collectionOverrides, res.collectionUpdates);
       setRows((prev) => [...prev, { name: r.name || r.url, response: res.response, tests: res.tests }]);
     }
     setRunning(false);
@@ -52,7 +66,7 @@ export function Runner({ collectionId, onClose }: { collectionId: string; onClos
           {rows.map((r, i) => (
             <div key={i} className="px-3 py-2 border-b border-signal-border">
               <div className="flex items-center gap-2 text-sm">
-                <span className={r.response && r.response.status < 400 ? "text-signal-ok" : "text-signal-err"}>
+                <span className={r.response && r.response.status > 0 && r.response.status < 400 ? "text-signal-ok" : "text-signal-err"}>
                   {r.response?.status ?? "—"}
                 </span>
                 <span className="flex-1 truncate">{r.name}</span>
@@ -69,4 +83,36 @@ export function Runner({ collectionId, onClose }: { collectionId: string; onClos
       </div>
     </div>
   );
+}
+
+function mergeKV(base: KeyValue[] | undefined, overrides: Record<string, string>): KeyValue[] {
+  const result: KeyValue[] = [];
+  const seen = new Set<string>();
+  for (const kv of base ?? []) {
+    if (Object.prototype.hasOwnProperty.call(overrides, kv.key)) {
+      result.push({ ...kv, value: overrides[kv.key], enabled: true });
+      seen.add(kv.key);
+    } else {
+      result.push(kv);
+    }
+  }
+  for (const [k, v] of Object.entries(overrides)) {
+    if (!seen.has(k)) result.push({ id: uid("ov"), key: k, value: v, enabled: true });
+  }
+  return result;
+}
+
+function flatten(col: ReturnType<typeof useStore.getState>["collections"][string]): SignalRequest[] {
+  const out: SignalRequest[] = [];
+  const visit = (folderId: string) => {
+    const f = col.folders[folderId];
+    if (!f) return;
+    for (const rid of f.requestIds) {
+      const r = col.requests[rid];
+      if (r) out.push(r);
+    }
+    for (const child of f.folderIds) visit(child);
+  };
+  visit(col.rootFolderId);
+  return out;
 }

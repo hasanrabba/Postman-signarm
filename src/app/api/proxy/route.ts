@@ -8,6 +8,7 @@ interface ProxyPayload {
   url: string;
   headers?: Record<string, string>;
   body?: string;
+  timeoutMs?: number;
 }
 
 // Block SSRF to loopback/private networks at the proxy boundary.
@@ -31,6 +32,38 @@ function isBlockedHost(hostname: string): boolean {
   if (h.startsWith("fc") || h.startsWith("fd")) return true; // IPv6 ULA
   if (h.startsWith("fe80")) return true;                     // link-local
   return false;
+}
+
+// Headers the client must not set on the outgoing request. `fetch` forbids most
+// of these and throws; we strip them silently so a leftover header from a
+// previous edit doesn't break the send.
+const FORBIDDEN_REQUEST_HEADERS = new Set([
+  "accept-charset", "accept-encoding", "access-control-request-headers",
+  "access-control-request-method", "connection", "content-length", "cookie",
+  "date", "dnt", "expect", "host", "keep-alive", "origin", "permissions-policy",
+  "referer", "te", "trailer", "transfer-encoding", "upgrade", "via",
+]);
+
+// Hop-by-hop headers and framing headers we must not forward back to the
+// browser verbatim. `fetch`/undici already decompressed the body, so
+// `content-encoding` and `content-length` would confuse the caller.
+const STRIP_RESPONSE_HEADERS = new Set([
+  "content-encoding", "content-length", "transfer-encoding", "connection",
+  "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
+  "upgrade",
+]);
+
+function filterRequestHeaders(raw: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (!k || v === undefined || v === null) continue;
+    const lk = k.toLowerCase();
+    if (FORBIDDEN_REQUEST_HEADERS.has(lk)) continue;
+    if (lk.startsWith("proxy-")) continue;
+    if (lk.startsWith("sec-")) continue;
+    out[k] = String(v);
+  }
+  return out;
 }
 
 export async function POST(req: NextRequest) {
@@ -68,31 +101,35 @@ export async function POST(req: NextRequest) {
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000);
+  const timeoutMs = Math.min(Math.max(payload.timeoutMs ?? 30_000, 1_000), 120_000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const method = (payload.method || "GET").toUpperCase();
-    const hasBody = !["GET", "HEAD"].includes(method) && payload.body !== undefined;
+    const hasBody = !["GET", "HEAD"].includes(method) && payload.body !== undefined && payload.body !== "";
+    const outHeaders = filterRequestHeaders(payload.headers ?? {});
     const res = await fetch(target.toString(), {
       method,
-      headers: payload.headers ?? {},
+      headers: outHeaders,
       body: hasBody ? payload.body : undefined,
       redirect: "follow",
       signal: controller.signal,
     });
     const buf = await res.arrayBuffer();
     const ct = res.headers.get("content-type") || "";
-    const isText = /^(text\/|application\/(json|xml|javascript|x-www-form-urlencoded|graphql))/.test(ct) || !ct;
+    const isText = /^(text\/|application\/(json|xml|javascript|x-www-form-urlencoded|graphql|ld\+json|problem\+json|vnd\.api\+json))/i.test(ct) || !ct;
     let body = "";
     let bodyIsBase64 = false;
     if (isText) {
-      body = new TextDecoder("utf-8").decode(buf);
+      body = new TextDecoder("utf-8", { fatal: false }).decode(buf);
     } else {
       body = Buffer.from(buf).toString("base64");
       bodyIsBase64 = true;
     }
     const headers: Record<string, string> = {};
-    res.headers.forEach((v, k) => { headers[k] = v; });
+    res.headers.forEach((v, k) => {
+      if (!STRIP_RESPONSE_HEADERS.has(k.toLowerCase())) headers[k] = v;
+    });
     return NextResponse.json({
       status: res.status,
       statusText: res.statusText,
@@ -102,6 +139,7 @@ export async function POST(req: NextRequest) {
       elapsedMs: Date.now() - started,
       sizeBytes: buf.byteLength,
       contentType: ct,
+      finalUrl: res.url !== target.toString() ? res.url : undefined,
     });
   } catch (e) {
     const err = e as Error;
@@ -112,7 +150,7 @@ export async function POST(req: NextRequest) {
       body: "",
       sizeBytes: 0,
       elapsedMs: Date.now() - started,
-      error: err.message,
+      error: err.name === "AbortError" ? `Request timed out after ${timeoutMs}ms` : err.message,
     });
   } finally {
     clearTimeout(timeout);

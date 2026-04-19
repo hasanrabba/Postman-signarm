@@ -19,7 +19,7 @@ export interface ScriptOutput {
 /**
  * Runs a user script in a constrained scope. We deliberately use `new Function`
  * with a curated `sg` API object rather than exposing the full window, and we
- * never expose fetch/XHR from scripts. This is best-effort isolation — it's
+ * never expose fetch/XHR from scripts. This is best-effort isolation — it is
  * not a security sandbox against malicious scripts that you author yourself.
  */
 export function runScript(script: string, ctx: ScriptContext): ScriptOutput {
@@ -38,6 +38,16 @@ export function runScript(script: string, ctx: ScriptContext): ScriptOutput {
     try { return JSON.parse(ctx.response.body); } catch { return undefined; }
   })();
 
+  const variables = {
+    // Convenience namespace that checks env → globals → collection in order.
+    get: (k: string) => {
+      if (k in ctx.env) return ctx.env[k];
+      if (k in ctx.global) return ctx.global[k];
+      if (k in ctx.collection) return ctx.collection[k];
+      return undefined;
+    },
+  };
+
   const sg = {
     request: {
       method: ctx.request.method,
@@ -50,21 +60,27 @@ export function runScript(script: string, ctx: ScriptContext): ScriptOutput {
       statusText: ctx.response.statusText,
       headers: ctx.response.headers,
       body: ctx.response.body,
+      elapsedMs: ctx.response.elapsedMs,
+      sizeBytes: ctx.response.sizeBytes,
       json: () => jsonBody,
       text: () => ctx.response?.body,
     },
     env: {
       get: (k: string) => ctx.env[k],
-      set: (k: string, v: string) => { output.setEnv[k] = String(v); },
+      set: (k: string, v: unknown) => { output.setEnv[k] = toStr(v); },
+      unset: (k: string) => { output.setEnv[k] = ""; },
     },
     globals: {
       get: (k: string) => ctx.global[k],
-      set: (k: string, v: string) => { output.setGlobal[k] = String(v); },
+      set: (k: string, v: unknown) => { output.setGlobal[k] = toStr(v); },
+      unset: (k: string) => { output.setGlobal[k] = ""; },
     },
     collection: {
       get: (k: string) => ctx.collection[k],
-      set: (k: string, v: string) => { output.setCollection[k] = String(v); },
+      set: (k: string, v: unknown) => { output.setCollection[k] = toStr(v); },
+      unset: (k: string) => { output.setCollection[k] = ""; },
     },
+    variables,
     test: (name: string, fn: () => void) => {
       try { fn(); output.tests.push({ name, passed: true }); }
       catch (e) {
@@ -73,33 +89,49 @@ export function runScript(script: string, ctx: ScriptContext): ScriptOutput {
     },
     expect: (actual: unknown) => ({
       toEqual: (b: unknown) => {
-        if (JSON.stringify(actual) !== JSON.stringify(b))
-          throw new Error(`expected ${JSON.stringify(actual)} to equal ${JSON.stringify(b)}`);
+        if (!deepEqual(actual, b))
+          throw new Error(`expected ${safeFmt(actual)} to equal ${safeFmt(b)}`);
       },
       toBe: (b: unknown) => {
-        if (actual !== b) throw new Error(`expected ${JSON.stringify(actual)} to be ${JSON.stringify(b)}`);
+        if (actual !== b) throw new Error(`expected ${safeFmt(actual)} to be ${safeFmt(b)}`);
       },
       toContain: (needle: string) => {
-        if (typeof actual !== "string" || !actual.includes(needle))
-          throw new Error(`expected ${JSON.stringify(actual)} to contain ${JSON.stringify(needle)}`);
+        if (typeof actual === "string") {
+          if (!actual.includes(needle))
+            throw new Error(`expected ${safeFmt(actual)} to contain ${safeFmt(needle)}`);
+        } else if (Array.isArray(actual)) {
+          if (!actual.includes(needle as unknown))
+            throw new Error(`expected array to contain ${safeFmt(needle)}`);
+        } else {
+          throw new Error(`toContain: unsupported type ${typeof actual}`);
+        }
       },
-      toBeTruthy: () => { if (!actual) throw new Error(`expected truthy, got ${JSON.stringify(actual)}`); },
+      toBeTruthy: () => { if (!actual) throw new Error(`expected truthy, got ${safeFmt(actual)}`); },
+      toBeFalsy: () => { if (actual) throw new Error(`expected falsy, got ${safeFmt(actual)}`); },
       toBeBetween: (lo: number, hi: number) => {
         const n = Number(actual);
         if (!(n >= lo && n <= hi)) throw new Error(`expected ${n} to be between ${lo} and ${hi}`);
       },
+      toMatch: (re: RegExp) => {
+        if (typeof actual !== "string" || !re.test(actual))
+          throw new Error(`expected ${safeFmt(actual)} to match ${re}`);
+      },
     }),
     console: {
-      log: (...args: unknown[]) => output.logs.push(args.map(fmt).join(" ")),
+      log: (...args: unknown[]) => output.logs.push(args.map(safeFmt).join(" ")),
+      warn: (...args: unknown[]) => output.logs.push("[warn] " + args.map(safeFmt).join(" ")),
+      error: (...args: unknown[]) => output.logs.push("[error] " + args.map(safeFmt).join(" ")),
     },
   };
 
   try {
-    // Minimal shadowing: prevent easy access to globals.
     const fn = new Function(
       "sg", "request", "response",
+      '"use strict";' +
       "const window=undefined;const document=undefined;const globalThis=undefined;" +
-      "const fetch=undefined;const XMLHttpRequest=undefined;const console=sg.console;" +
+      "const self=undefined;const top=undefined;const parent=undefined;" +
+      "const fetch=undefined;const XMLHttpRequest=undefined;const WebSocket=undefined;" +
+      "const importScripts=undefined;const console=sg.console;" +
       script
     );
     fn(sg, sg.request, sg.response);
@@ -115,7 +147,51 @@ function headersAsObject(h: KeyValue[]) {
   return out;
 }
 
-function fmt(x: unknown): string {
+function toStr(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "string") return v;
+  return safeFmt(v);
+}
+
+/**
+ * JSON.stringify that survives circular references and BigInts. Returns
+ * "[Unserializable]" as a last resort so a logging call never throws the
+ * whole script.
+ */
+function safeFmt(x: unknown): string {
+  if (x === null) return "null";
+  if (x === undefined) return "undefined";
   if (typeof x === "string") return x;
-  try { return JSON.stringify(x); } catch { return String(x); }
+  if (typeof x === "bigint") return `${x.toString()}n`;
+  const seen = new WeakSet<object>();
+  try {
+    return JSON.stringify(x, (_key, value) => {
+      if (typeof value === "bigint") return value.toString() + "n";
+      if (typeof value === "object" && value !== null) {
+        if (seen.has(value as object)) return "[Circular]";
+        seen.add(value as object);
+      }
+      return value;
+    }) ?? String(x);
+  } catch {
+    try { return String(x); } catch { return "[Unserializable]"; }
+  }
+}
+
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (typeof a !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    return a.every((x, i) => deepEqual(x, b[i]));
+  }
+  const ka = Object.keys(a as object).sort();
+  const kb = Object.keys(b as object).sort();
+  if (ka.length !== kb.length) return false;
+  if (ka.some((k, i) => k !== kb[i])) return false;
+  return ka.every((k) =>
+    deepEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k])
+  );
 }

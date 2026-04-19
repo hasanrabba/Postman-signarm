@@ -49,6 +49,8 @@ interface Store {
   deleteCollection: (id: string) => void;
   addFolder: (collectionId: string, parentFolderId: string, name: string) => string;
   addRequest: (collectionId: string, folderId: string, template?: Partial<SignalRequest>) => string;
+  renameRequest: (collectionId: string, requestId: string, name: string) => void;
+  duplicateRequest: (collectionId: string, requestId: string) => string | undefined;
   deleteRequest: (collectionId: string, requestId: string) => void;
   commitCollectionVersion: (collectionId: string, message: string) => void;
   revertCollection: (collectionId: string, versionId: string) => void;
@@ -68,6 +70,10 @@ interface Store {
   setActiveTab: (tabId: string) => void;
   updateDraft: (tabId: string, patch: Partial<SignalRequest>) => void;
   saveDraft: (tabId: string, collectionId: string, folderId: string) => void;
+  /** Save a tab's draft over the request it was opened from, if any. */
+  saveTabInPlace: (tabId: string) => boolean;
+  /** Locate which collection+folder owns a given requestId. */
+  findRequestLocation: (requestId: string) => { collectionId: string; folderId: string } | undefined;
   setTabResponse: (
     tabId: string,
     response: SignalResponse,
@@ -177,6 +183,49 @@ export const useStore = create<Store>()(
           };
         });
         return r.id;
+      },
+      renameRequest: (collectionId, requestId, name) => set((s) => {
+        const c = s.collections[collectionId]; if (!c) return s;
+        const r = c.requests[requestId]; if (!r) return s;
+        return {
+          collections: {
+            ...s.collections,
+            [collectionId]: {
+              ...c,
+              requests: { ...c.requests, [requestId]: { ...r, name } },
+              updatedAt: Date.now(),
+            },
+          },
+        };
+      }),
+      duplicateRequest: (collectionId, requestId) => {
+        const state = get();
+        const col = state.collections[collectionId];
+        if (!col) return undefined;
+        const src = col.requests[requestId];
+        if (!src) return undefined;
+        const parent = Object.values(col.folders).find((f) => f.requestIds.includes(requestId));
+        if (!parent) return undefined;
+        const copy: SignalRequest = { ...src, id: uid("req"), name: `${src.name} (copy)` };
+        set((s) => {
+          const c = s.collections[collectionId]; if (!c) return s;
+          const f = c.folders[parent.id]; if (!f) return s;
+          return {
+            collections: {
+              ...s.collections,
+              [collectionId]: {
+                ...c,
+                requests: { ...c.requests, [copy.id]: copy },
+                folders: {
+                  ...c.folders,
+                  [parent.id]: { ...f, requestIds: [...f.requestIds, copy.id] },
+                },
+                updatedAt: Date.now(),
+              },
+            },
+          };
+        });
+        return copy.id;
       },
       deleteRequest: (collectionId, requestId) => set((s) => {
         const c = s.collections[collectionId]; if (!c) return s;
@@ -288,6 +337,28 @@ export const useStore = create<Store>()(
           tabs: s.tabs.map((t) => t.id === tabId ? { ...t, dirty: false, requestId: tab.draft.id } : t),
         };
       }),
+      saveTabInPlace: (tabId) => {
+        const s = get();
+        const tab = s.tabs.find((t) => t.id === tabId);
+        if (!tab) return false;
+        const loc = s.findRequestLocation(tab.draft.id);
+        if (!loc) return false;
+        s.saveDraft(tabId, loc.collectionId, loc.folderId);
+        return true;
+      },
+      findRequestLocation: (requestId) => {
+        const s = get();
+        for (const cid of s.collectionOrder) {
+          const c = s.collections[cid];
+          if (!c || !c.requests[requestId]) continue;
+          for (const [fid, f] of Object.entries(c.folders)) {
+            if (f.requestIds.includes(requestId)) {
+              return { collectionId: cid, folderId: fid };
+            }
+          }
+        }
+        return undefined;
+      },
       setTabResponse: (tabId, response, tests, logs) => set((s) => ({
         tabs: s.tabs.map((t) => t.id === tabId ? { ...t, response, tests, logs, sending: false } : t),
       })),
@@ -314,7 +385,16 @@ export const useStore = create<Store>()(
     }),
     {
       name: "signal.state.v1",
-      storage: createJSONStorage(() => localStorage),
+      // Skip auto-hydration so SSR renders an empty store and the client
+      // rehydrates after mount. Without this, zustand's persist middleware
+      // reads localStorage synchronously during the first render pass and
+      // produces hydration mismatches.
+      skipHydration: true,
+      storage: createJSONStorage(() =>
+        typeof window === "undefined"
+          ? (undefined as unknown as Storage)
+          : window.localStorage
+      ),
       partialize: (s) => ({
         collections: s.collections,
         collectionOrder: s.collectionOrder,

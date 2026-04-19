@@ -1,5 +1,4 @@
-// Smoke test the pure-TS modules. Run with:
-//   node --experimental-strip-types --experimental-transform-types scripts/smoke.ts
+// Unit smoke tests for Signal's pure-TS modules. Run: npm run smoke
 import { resolveVars } from "../src/lib/variables";
 import { parseCurl, toCurl } from "../src/lib/curl";
 import { generateSnippet } from "../src/lib/snippets";
@@ -93,6 +92,47 @@ test("rejects non-curl strings", () => {
   eq(parseCurl("wget https://example.com"), null);
   eq(parseCurl(""), null);
 });
+test("expands combined short flags", () => {
+  const r = parseCurl("curl -sL -X POST https://example.com -d x=1");
+  assert(r, "no request");
+  eq(r!.method, "POST");
+});
+test("parses -u basic auth", () => {
+  const r = parseCurl("curl -u alice:secret https://example.com");
+  assert(r, "no request");
+  const auth = r!.headers.find((h) => h.key.toLowerCase() === "authorization");
+  assert(auth, "no authorization");
+  assert(auth!.value.startsWith("Basic "), "not basic");
+});
+test("parses -A user agent and -e referer and -b cookie", () => {
+  const r = parseCurl("curl -A 'Signal/1' -e 'https://ref.example.com' -b 'session=abc' https://example.com");
+  assert(r, "no request");
+  const get = (k: string) => r!.headers.find((h) => h.key.toLowerCase() === k)?.value;
+  eq(get("user-agent"), "Signal/1");
+  eq(get("referer"), "https://ref.example.com");
+  eq(get("cookie"), "session=abc");
+});
+test("parses -F form fields", () => {
+  const r = parseCurl("curl -F name=alice -F avatar=@photo.png https://example.com/upload");
+  assert(r, "no request");
+  eq(r!.body.mode, "form-data");
+  eq(r!.body.formdata!.length, 2);
+  eq(r!.body.formdata![1].type, "file");
+  eq(r!.body.formdata![1].fileName, "photo.png");
+});
+test("JSON body detected without content-type header", () => {
+  const r = parseCurl(`curl https://example.com -d '{"x":1}'`);
+  assert(r, "no request");
+  eq(r!.body.mode, "json");
+});
+test("--url flag supplies URL", () => {
+  const r = parseCurl("curl --url https://example.com/api");
+  eq(r!.url, "https://example.com/api");
+});
+test("bare host defaults to https", () => {
+  const r = parseCurl("curl example.com");
+  eq(r!.url, "https://example.com");
+});
 
 console.log("\nauth");
 test("basic auth adds Authorization header", () => {
@@ -156,13 +196,26 @@ test("sg.env.set captures updates", () => {
   const out = runScript(`sg.env.set("foo", "bar");`, { request: emptyRequest(), env: {}, global: {}, collection: {} });
   eq(out.setEnv.foo, "bar");
 });
-test("matchers: toEqual / toContain / toBeBetween", () => {
+test("sg.env.set accepts non-string", () => {
+  const out = runScript(`sg.env.set("n", 42);`, { request: emptyRequest(), env: {}, global: {}, collection: {} });
+  eq(out.setEnv.n, "42");
+});
+test("matchers: toEqual / toContain / toBeBetween / toMatch", () => {
   const out = runScript(`
     sg.test("eq", () => sg.expect({a:1}).toEqual({a:1}));
     sg.test("contain", () => sg.expect("hello").toContain("ell"));
     sg.test("between", () => sg.expect(5).toBeBetween(1,10));
+    sg.test("match", () => sg.expect("abc").toMatch(/b/));
+    sg.test("falsy", () => sg.expect(0).toBeFalsy());
   `, { request: emptyRequest(), env: {}, global: {}, collection: {} });
-  eq(out.tests.filter(t => t.passed).length, 3);
+  eq(out.tests.filter(t => t.passed).length, 5);
+});
+test("deep equality ignores key order", () => {
+  const out = runScript(
+    `sg.test("deep", () => sg.expect({a:1,b:2}).toEqual({b:2,a:1}));`,
+    { request: emptyRequest(), env: {}, global: {}, collection: {} }
+  );
+  eq(out.tests[0].passed, true);
 });
 test("response.json() parses", () => {
   const out = runScript(`
@@ -176,10 +229,37 @@ test("response.json() parses", () => {
 });
 test("fetch/window unavailable in script", () => {
   const out = runScript(
-    `sg.test("no fetch", () => { try { fetch("x"); sg.expect(true).toBe(false); } catch {} sg.expect(typeof fetch).toBe("undefined"); });`,
+    `sg.test("no fetch", () => { sg.expect(typeof fetch).toBe("undefined"); sg.expect(typeof window).toBe("undefined"); });`,
     { request: emptyRequest(), env: {}, global: {}, collection: {} }
   );
   eq(out.tests[0].passed, true);
+});
+test("console.log survives circular refs", () => {
+  const out = runScript(
+    `const x = {}; x.self = x; console.log(x);`,
+    { request: emptyRequest(), env: {}, global: {}, collection: {} }
+  );
+  eq(out.logs.length, 1);
+  assert(out.logs[0].includes("Circular"), "no circular marker: " + out.logs[0]);
+});
+test("sg.variables.get cascades env > global > collection", () => {
+  const out = runScript(
+    `sg.test("env wins", () => sg.expect(sg.variables.get("k")).toBe("e"));
+     sg.test("falls back to global", () => sg.expect(sg.variables.get("g")).toBe("G"));
+     sg.test("falls back to collection", () => sg.expect(sg.variables.get("c")).toBe("C"));`,
+    { request: emptyRequest(), env: { k: "e" }, global: { k: "G", g: "G" }, collection: { c: "C" } }
+  );
+  eq(out.tests.filter(t => t.passed).length, 3);
+});
+test("empty script is a no-op", () => {
+  const out = runScript("", { request: emptyRequest(), env: {}, global: {}, collection: {} });
+  eq(out.tests.length, 0);
+  eq(out.logs.length, 0);
+});
+test("script syntax error is captured as log", () => {
+  const out = runScript("totally not valid js !!!", { request: emptyRequest(), env: {}, global: {}, collection: {} });
+  eq(out.logs.length, 1);
+  assert(out.logs[0].includes("script error"), "no error marker");
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

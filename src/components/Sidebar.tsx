@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 import { useStore } from "@/lib/store";
-import type { Collection, Folder, SignalRequest } from "@/lib/types";
+import type { Collection, Folder, Method, MockRoute, MockServer, SignalRequest } from "@/lib/types";
+import { uid } from "@/lib/id";
 
 type Panel = "collections" | "environments" | "history" | "mocks";
 
@@ -164,17 +165,73 @@ function FolderNode({
             <FolderNode key={f.id} collection={collection} folder={f} onAddRequest={onAddRequest} onOpen={onOpen} matches={matches} />
           ))}
           {subRequests.map((r) => (
-            <button
-              key={r.id}
-              className="flex items-center gap-2 w-full text-left px-1 py-0.5 text-xs hover:bg-signal-bg rounded"
-              onClick={() => onOpen(r.id)}
-            >
-              <span className={`method-pill method-${r.method}`}>{r.method}</span>
-              <span className="truncate text-slate-200">{r.name || r.url || "(untitled)"}</span>
-            </button>
+            <RequestItem key={r.id} collection={collection} request={r} onOpen={onOpen} />
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function RequestItem({
+  collection, request, onOpen,
+}: {
+  collection: Collection;
+  request: SignalRequest;
+  onOpen: (id: string) => void;
+}) {
+  const { renameRequest, duplicateRequest, deleteRequest, openRequest } = useStore();
+  const [showMenu, setShowMenu] = useState(false);
+  return (
+    <div
+      className="group flex items-center gap-2 w-full text-xs hover:bg-signal-bg rounded pr-1"
+      onMouseLeave={() => setShowMenu(false)}
+    >
+      <button
+        className="flex items-center gap-2 flex-1 text-left px-1 py-0.5 min-w-0"
+        onClick={() => onOpen(request.id)}
+      >
+        <span className={`method-pill method-${request.method}`}>{request.method}</span>
+        <span className="truncate text-slate-200">{request.name || request.url || "(untitled)"}</span>
+      </button>
+      <div className="relative">
+        <button
+          className="opacity-0 group-hover:opacity-100 text-signal-muted hover:text-white px-1"
+          onClick={(e) => { e.stopPropagation(); setShowMenu((v) => !v); }}
+        >⋯</button>
+        {showMenu && (
+          <div
+            className="absolute right-0 top-5 z-10 bg-signal-panel border border-signal-border rounded shadow text-xs"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              className="block w-full text-left px-2 py-1 hover:bg-signal-bg"
+              onClick={() => {
+                const next = prompt("Rename request", request.name);
+                if (next !== null) renameRequest(collection.id, request.id, next);
+                setShowMenu(false);
+              }}
+            >Rename</button>
+            <button
+              className="block w-full text-left px-2 py-1 hover:bg-signal-bg"
+              onClick={() => {
+                const dupId = duplicateRequest(collection.id, request.id);
+                if (dupId) openRequest(collection.id, dupId);
+                setShowMenu(false);
+              }}
+            >Duplicate</button>
+            <button
+              className="block w-full text-left px-2 py-1 hover:bg-signal-bg text-signal-err"
+              onClick={() => {
+                if (confirm(`Delete "${request.name || request.url}"?`)) {
+                  deleteRequest(collection.id, request.id);
+                }
+                setShowMenu(false);
+              }}
+            >Delete</button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -300,16 +357,124 @@ function MocksPanel() {
         }}
       >+ New mock server</button>
       {list.map((m) => (
-        <div key={m.id} className="border border-signal-border rounded p-2 space-y-1">
-          <div className="flex items-center gap-1">
-            <input className="input flex-1" value={m.name} onChange={(e) => updateMock(m.id, { name: e.target.value })} />
-            <button className="text-xs text-signal-muted hover:text-signal-err" onClick={() => deleteMock(m.id)}>×</button>
-          </div>
-          <div className="text-[10px] text-signal-muted break-all">
-            POST to /api/mock-config with {`{ mockId: "${m.id}", routes: [...] }`} to register routes. Then hit <code>/api/mock/{m.id}/your/path</code>.
+        <MockServerEditor
+          key={m.id}
+          server={m}
+          onRename={(name) => updateMock(m.id, { name })}
+          onDelete={() => deleteMock(m.id)}
+          onRoutesChange={(routes) => updateMock(m.id, { routes })}
+        />
+      ))}
+    </div>
+  );
+}
+
+function MockServerEditor({
+  server, onRename, onDelete, onRoutesChange,
+}: {
+  server: MockServer;
+  onRename: (name: string) => void;
+  onDelete: () => void;
+  onRoutesChange: (routes: MockRoute[]) => void;
+}) {
+  const METHODS: Method[] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+  const [syncing, setSyncing] = useState<"idle" | "ok" | "error">("idle");
+  const [expanded, setExpanded] = useState(false);
+
+  const sync = async () => {
+    setSyncing("idle");
+    try {
+      const res = await fetch("/api/mock-config", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mockId: server.id, routes: server.routes }),
+      });
+      setSyncing(res.ok ? "ok" : "error");
+    } catch { setSyncing("error"); }
+  };
+
+  const addRoute = () => {
+    const newRoute: MockRoute = {
+      id: uid("rt"),
+      method: "GET",
+      path: "/",
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    };
+    onRoutesChange([...server.routes, newRoute]);
+    setExpanded(true);
+  };
+
+  return (
+    <div className="border border-signal-border rounded p-2 space-y-1">
+      <div className="flex items-center gap-1">
+        <button className="text-signal-muted w-4" onClick={() => setExpanded((v) => !v)}>
+          {expanded ? "▾" : "▸"}
+        </button>
+        <input className="input flex-1" value={server.name} onChange={(e) => onRename(e.target.value)} />
+        <button className="text-xs text-signal-muted hover:text-signal-err" onClick={onDelete}>×</button>
+      </div>
+      <div className="text-[10px] text-signal-muted break-all">
+        <code>/api/mock/{server.id}/&lt;path&gt;</code>
+      </div>
+      {expanded && (
+        <div className="space-y-1">
+          {server.routes.map((r, idx) => (
+            <div key={r.id} className="border border-signal-border rounded p-1 space-y-1">
+              <div className="flex items-center gap-1">
+                <select
+                  className="input !w-20"
+                  value={r.method}
+                  onChange={(e) => {
+                    const copy = [...server.routes]; copy[idx] = { ...r, method: e.target.value as Method };
+                    onRoutesChange(copy);
+                  }}
+                >
+                  {METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
+                </select>
+                <input
+                  className="input flex-1"
+                  value={r.path}
+                  placeholder="/path"
+                  onChange={(e) => {
+                    const copy = [...server.routes]; copy[idx] = { ...r, path: e.target.value };
+                    onRoutesChange(copy);
+                  }}
+                />
+                <input
+                  className="input !w-16"
+                  type="number"
+                  value={r.status}
+                  onChange={(e) => {
+                    const copy = [...server.routes]; copy[idx] = { ...r, status: Number(e.target.value) };
+                    onRoutesChange(copy);
+                  }}
+                />
+                <button
+                  className="text-xs text-signal-muted hover:text-signal-err"
+                  onClick={() => onRoutesChange(server.routes.filter((x) => x.id !== r.id))}
+                >×</button>
+              </div>
+              <textarea
+                className="input font-mono h-16 text-[11px]"
+                placeholder="response body"
+                value={r.body}
+                onChange={(e) => {
+                  const copy = [...server.routes]; copy[idx] = { ...r, body: e.target.value };
+                  onRoutesChange(copy);
+                }}
+              />
+            </div>
+          ))}
+          <div className="flex gap-1">
+            <button className="btn flex-1" onClick={addRoute}>+ Route</button>
+            <button className="btn flex-1" onClick={sync}>
+              Publish{syncing === "ok" ? " ✓" : syncing === "error" ? " ✗" : ""}
+            </button>
           </div>
         </div>
-      ))}
+      )}
     </div>
   );
 }
