@@ -6,6 +6,7 @@ import type { Collection, Folder, Method, MockRoute, MockServer, SignalRequest }
 import { uid } from "@/lib/id";
 import { EditableName, type EditableNameHandle } from "./EditableName";
 import { confirmDialog } from "./ConfirmDialog";
+import { Icon } from "./Icon";
 
 type Panel = "collections" | "environments" | "history" | "mocks";
 
@@ -14,7 +15,7 @@ export function Sidebar() {
   const [search, setSearch] = useState("");
 
   return (
-    <aside className="w-72 shrink-0 border-r border-signal-border bg-signal-panel flex flex-col">
+    <aside className="w-80 shrink-0 border-r border-signal-border bg-signal-panel flex flex-col">
       <div className="p-3 border-b border-signal-border flex items-center gap-2">
         <div className="font-bold text-white tracking-wider">
           <span className="text-signal-accent">signarm</span> signal
@@ -112,44 +113,51 @@ function CollectionTree({
 
   return (
     <div className="border border-signal-border rounded">
-      <div className="flex items-center gap-1 px-2 py-1 bg-signal-bg relative">
+      <div className="flex items-center gap-0.5 px-2 py-1.5 bg-signal-bg relative">
         <button
           onClick={() => setOpen((o) => !o)}
-          className="text-signal-muted w-4"
+          className="text-signal-muted hover:text-white w-5 h-5 flex items-center justify-center rounded hover:bg-signal-panel"
           aria-label={open ? "Collapse collection" : "Expand collection"}
-        >{open ? "▾" : "▸"}</button>
+        >
+          <Icon name={open ? "chevronDown" : "chevronRight"} size={12} />
+        </button>
         <EditableName
           ref={nameRef}
           value={collection.name}
           onSave={(next) => renameCollection(collection.id, next)}
-          className="font-medium text-white text-sm flex-1 truncate"
+          className="font-medium text-white text-sm flex-1 truncate px-1"
           inputClassName="input flex-1 !py-0 !text-sm font-medium"
           ariaLabel={`Rename collection ${collection.name}`}
         />
-        <button
-          className="text-xs text-signal-muted hover:text-white px-1"
+        <IconButton
+          label={`Rename collection ${collection.name}`}
           title="Rename"
-          aria-label={`Rename collection ${collection.name}`}
-          onClick={(e) => { e.stopPropagation(); nameRef.current?.startEditing(); }}
-        >✎</button>
-        <button
-          className="text-xs text-signal-muted hover:text-white px-1"
-          title="New folder"
-          aria-label="Add folder to collection"
+          onClick={() => nameRef.current?.startEditing()}
+        >
+          <Icon name="pencil" />
+        </IconButton>
+        <IconButton
+          label="Add folder"
+          title="Add folder"
           onClick={() => addFolder(collection.id, collection.rootFolderId, "new folder")}
-        >＋</button>
-        <button
-          className="text-xs text-signal-muted hover:text-white px-1"
+        >
+          <Icon name="folderPlus" />
+        </IconButton>
+        <IconButton
+          label="Commit version"
           title="Commit version"
-          aria-label="Commit collection version"
-          onClick={() => void commitCollectionVersion(collection.id, new Date().toISOString())}
-        >⎘</button>
-        <button
-          className="text-xs text-signal-muted hover:text-signal-err px-1"
+          onClick={() => commitCollectionVersion(collection.id, new Date().toISOString())}
+        >
+          <Icon name="gitBranch" />
+        </IconButton>
+        <IconButton
+          label={`Delete collection ${collection.name}`}
           title="Delete collection"
-          aria-label={`Delete collection ${collection.name}`}
+          danger
           onClick={handleDelete}
-        >✕</button>
+        >
+          <Icon name="trash" />
+        </IconButton>
       </div>
       {open && (
         <FolderNode
@@ -201,44 +209,51 @@ function FolderNode({
           name is already the collection header. Show a row only for
           non-root (nested) folders. */}
       {!isRoot && (
-        <div className="flex items-center gap-1 px-1 py-0.5 text-sm relative">
+        <div className="flex items-center gap-0.5 px-1 py-0.5 text-sm relative">
           <button
             onClick={() => setOpen((o) => !o)}
-            className="w-4 text-signal-muted"
+            className="w-5 h-5 flex items-center justify-center rounded text-signal-muted hover:text-white hover:bg-signal-panel"
             aria-label={open ? "Collapse folder" : "Expand folder"}
-          >{open ? "▾" : "▸"}</button>
+          >
+            <Icon name={open ? "chevronDown" : "chevronRight"} size={12} />
+          </button>
           <EditableName
             ref={nameRef}
             value={folder.name}
             onSave={(next) => renameFolder(collection.id, folder.id, next)}
-            className="flex-1 text-signal-muted truncate"
+            className="flex-1 text-signal-muted truncate px-1"
             inputClassName="input flex-1 !py-0 !text-xs"
             ariaLabel={`Rename folder ${folder.name}`}
           />
-          <button
-            className="text-[11px] text-signal-muted hover:text-white px-1"
-            onClick={(e) => { e.stopPropagation(); nameRef.current?.startEditing(); }}
+          <IconButton
+            label={`Rename folder ${folder.name}`}
             title="Rename folder"
-            aria-label={`Rename folder ${folder.name}`}
-          >✎</button>
-          <button
-            className="text-[11px] text-signal-muted hover:text-white px-1"
-            onClick={() => onAddRequest(folder.id)}
+            onClick={() => nameRef.current?.startEditing()}
+          >
+            <Icon name="pencil" size={12} />
+          </IconButton>
+          <IconButton
+            label="Add request to folder"
             title="Add request here"
-            aria-label="Add request to folder"
-          >+req</button>
-          <button
-            className="text-[11px] text-signal-muted hover:text-white px-1"
-            onClick={() => addFolder(collection.id, folder.id, "subfolder")}
+            onClick={() => onAddRequest(folder.id)}
+          >
+            <Icon name="plus" size={12} />
+          </IconButton>
+          <IconButton
+            label="Add subfolder"
             title="Add subfolder"
-            aria-label="Add subfolder"
-          >+fld</button>
-          <button
-            className="text-[11px] text-signal-muted hover:text-signal-err px-1"
-            onClick={handleDelete}
+            onClick={() => addFolder(collection.id, folder.id, "subfolder")}
+          >
+            <Icon name="folderPlus" size={12} />
+          </IconButton>
+          <IconButton
+            label={`Delete folder ${folder.name}`}
             title="Delete folder"
-            aria-label={`Delete folder ${folder.name}`}
-          >✕</button>
+            danger
+            onClick={handleDelete}
+          >
+            <Icon name="trash" size={12} />
+          </IconButton>
         </div>
       )}
       {open && (
@@ -292,27 +307,31 @@ function RequestItem({
         inputClassName="input flex-1 !py-0 !text-xs"
         ariaLabel={`Rename request ${request.name || request.url}`}
       />
-      <button
-        className="text-signal-muted hover:text-white px-1"
-        onClick={(e) => { e.stopPropagation(); nameRef.current?.startEditing(); }}
+      <IconButton
+        label={`Rename request ${request.name || request.url}`}
         title="Rename request"
-        aria-label={`Rename request ${request.name || request.url}`}
-      >✎</button>
-      <button
-        className="text-signal-muted hover:text-white px-1"
+        onClick={() => nameRef.current?.startEditing()}
+      >
+        <Icon name="pencil" size={12} />
+      </IconButton>
+      <IconButton
+        label="Duplicate request"
+        title="Duplicate"
         onClick={() => {
           const dupId = duplicateRequest(collection.id, request.id);
           if (dupId) openRequest(collection.id, dupId);
         }}
-        title="Duplicate"
-        aria-label="Duplicate request"
-      >⧉</button>
-      <button
-        className="text-signal-muted hover:text-signal-err px-1"
-        onClick={handleDelete}
+      >
+        <Icon name="copy" size={12} />
+      </IconButton>
+      <IconButton
+        label={`Delete request ${request.name || request.url}`}
         title="Delete request"
-        aria-label={`Delete request ${request.name || request.url}`}
-      >✕</button>
+        danger
+        onClick={handleDelete}
+      >
+        <Icon name="trash" size={12} />
+      </IconButton>
     </div>
   );
 }
@@ -552,5 +571,37 @@ function MockServerEditor({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Consistent icon-button styling for the sidebar action buttons. Always
+ * visible; shows a hover box and dim → bright color transition so users
+ * can tell it's clickable.
+ */
+function IconButton({
+  label, title, onClick, danger = false, children,
+}: {
+  label: string;
+  title: string;
+  onClick: (e: React.MouseEvent) => void;
+  danger?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={title}
+      onClick={(e) => { e.stopPropagation(); onClick(e); }}
+      className={
+        "w-6 h-6 flex items-center justify-center rounded text-signal-muted " +
+        (danger
+          ? "hover:bg-signal-err/20 hover:text-signal-err"
+          : "hover:bg-signal-panel hover:text-white")
+      }
+    >
+      {children}
+    </button>
   );
 }
