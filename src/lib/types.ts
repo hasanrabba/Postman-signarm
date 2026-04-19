@@ -10,6 +10,12 @@ export interface KeyValue {
   value: string;
   enabled: boolean;
   description?: string;
+  /**
+   * When true, the UI masks the value behind a reveal toggle and redacts
+   * it from history entries and console logs. Auto-applied to well-known
+   * credential header names during cURL import.
+   */
+  secret?: boolean;
 }
 
 export type AuthType =

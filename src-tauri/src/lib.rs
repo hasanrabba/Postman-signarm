@@ -3,8 +3,11 @@ mod mock_server;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Intentionally no plugins: we don't want the UI to have access to the
+    // filesystem, shell, dialog, notifications, or opener. Everything the
+    // app needs goes through our own IPC commands (proxy_fetch,
+    // mock_register, mock_base_url) which validate their inputs.
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Kick off the local mock HTTP server on a free port; the UI
             // discovers the port via a Tauri command.

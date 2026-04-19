@@ -1,10 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the Signarm Signal desktop window",
+  "description": "Allowlist for the Signarm Signal main window. Only the commands used by the frontend are permitted; everything else on the Tauri IPC surface is refused so a compromised page cannot escalate into the host.",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "opener:default"
+    "core:app:default",
+    "core:window:default",
+    "core:webview:default",
+    "core:event:default",
+    "core:path:default",
+    "core:resources:default"
   ]
 }

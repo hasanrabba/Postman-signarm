@@ -53,6 +53,17 @@ fn err(status_text: &str, error: String, elapsed: u128) -> ProxyResponse {
     }
 }
 
+// Hard limits on any request reaching the proxy command — these exist to
+// prevent a compromised frontend, or a maliciously-constructed Tauri IPC
+// call from a misbehaving script, from DoSing the host with a 10 GB body
+// or a 64k-header request.
+const MAX_URL_LEN: usize = 4 * 1024;                // 4 KB
+const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;      // 16 MB
+const MAX_HEADERS: usize = 256;
+const MAX_HEADER_VALUE_LEN: usize = 8 * 1024;        // 8 KB
+const MIN_TIMEOUT_MS: u64 = 1_000;
+const MAX_TIMEOUT_MS: u64 = 120_000;
+
 const FORBIDDEN_REQUEST_HEADERS: &[&str] = &[
     "accept-charset", "accept-encoding", "access-control-request-headers",
     "access-control-request-method", "connection", "content-length", "cookie",
@@ -70,12 +81,14 @@ fn filter_request_headers(
     raw: std::collections::HashMap<String, String>,
 ) -> std::collections::HashMap<String, String> {
     raw.into_iter()
-        .filter(|(k, _)| {
+        .filter(|(k, v)| {
+            if v.len() > MAX_HEADER_VALUE_LEN { return false; }
             let lk = k.to_ascii_lowercase();
             if FORBIDDEN_REQUEST_HEADERS.contains(&lk.as_str()) { return false; }
             if lk.starts_with("proxy-") || lk.starts_with("sec-") { return false; }
             true
         })
+        .take(MAX_HEADERS)
         .collect()
 }
 
@@ -93,12 +106,15 @@ fn is_text_content_type(ct: &str) -> bool {
         || lc.starts_with("application/vnd.api+json")
 }
 
-/// SSRF guard: reject non-http(s) and — when `SIGNAL_ALLOW_LOCAL` is
-/// unset — reject loopback, private, and link-local addresses. The
-/// desktop binary defaults to allowing local traffic because the user
-/// is running this on their own machine.
+/// SSRF guard: reject non-http(s) and — by default — reject loopback,
+/// private, and link-local addresses. Users who are deliberately testing
+/// their own LAN services can opt out with `SIGNAL_ALLOW_LOCAL=1`. This
+/// is the opposite default of the web build, where the bundled Next.js
+/// mock server uses loopback as a legitimate destination; in the desktop
+/// build the Rust-side mock server lives in-process, not over HTTP, so
+/// there's no reason a user's request should be hitting loopback.
 fn should_block(host: &str) -> bool {
-    if std::env::var("SIGNAL_BLOCK_LOCAL").ok().as_deref() != Some("1") {
+    if std::env::var("SIGNAL_ALLOW_LOCAL").ok().as_deref() == Some("1") {
         return false;
     }
     let h = host.to_ascii_lowercase();
@@ -128,6 +144,32 @@ fn should_block(host: &str) -> bool {
 #[tauri::command]
 pub async fn proxy_fetch(payload: ProxyPayload) -> Result<ProxyResponse, String> {
     let started = Instant::now();
+
+    // Reject oversized inputs before we touch the network. Keeps a rogue
+    // caller from forcing us to allocate gigabytes.
+    if payload.url.len() > MAX_URL_LEN {
+        return Ok(err(
+            "Invalid URL",
+            format!("URL too long ({} > {} bytes)", payload.url.len(), MAX_URL_LEN),
+            started.elapsed().as_millis(),
+        ));
+    }
+    if let Some(body) = payload.body.as_ref() {
+        if body.len() > MAX_BODY_BYTES {
+            return Ok(err(
+                "Payload Too Large",
+                format!("Body too large ({} > {} bytes)", body.len(), MAX_BODY_BYTES),
+                started.elapsed().as_millis(),
+            ));
+        }
+    }
+    if payload.headers.len() > MAX_HEADERS {
+        return Ok(err(
+            "Too Many Headers",
+            format!("Too many headers ({} > {})", payload.headers.len(), MAX_HEADERS),
+            started.elapsed().as_millis(),
+        ));
+    }
     let parsed = match Url::parse(&payload.url) {
         Ok(u) => u,
         Err(e) => {
@@ -156,7 +198,7 @@ pub async fn proxy_fetch(payload: ProxyPayload) -> Result<ProxyResponse, String>
     }
 
     let timeout = Duration::from_millis(
-        payload.timeout_ms.unwrap_or(30_000).clamp(1_000, 120_000),
+        payload.timeout_ms.unwrap_or(30_000).clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS),
     );
     let method = match payload.method.to_ascii_uppercase().as_str() {
         "GET" => reqwest::Method::GET,
@@ -265,4 +307,78 @@ pub async fn proxy_fetch(payload: ProxyPayload) -> Result<ProxyResponse, String>
         content_type: if content_type.is_empty() { None } else { Some(content_type) },
         final_url,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kv(k: &str, v: &str) -> (String, String) {
+        (k.to_string(), v.to_string())
+    }
+
+    #[test]
+    fn filter_drops_forbidden_headers() {
+        let raw: std::collections::HashMap<String, String> = [
+            kv("Host", "attacker.example"),
+            kv("Cookie", "session=1"),
+            kv("X-Real", "1"),
+        ].into_iter().collect();
+        let filtered = filter_request_headers(raw);
+        assert!(!filtered.keys().any(|k| k.eq_ignore_ascii_case("host")));
+        assert!(!filtered.keys().any(|k| k.eq_ignore_ascii_case("cookie")));
+        assert!(filtered.keys().any(|k| k == "X-Real"));
+    }
+
+    #[test]
+    fn filter_drops_oversized_header_values() {
+        let big = "a".repeat(MAX_HEADER_VALUE_LEN + 1);
+        let raw: std::collections::HashMap<String, String> = [
+            kv("X-Huge", &big),
+            kv("X-Small", "ok"),
+        ].into_iter().collect();
+        let filtered = filter_request_headers(raw);
+        assert!(!filtered.contains_key("X-Huge"));
+        assert!(filtered.contains_key("X-Small"));
+    }
+
+    #[test]
+    fn filter_caps_header_count() {
+        let raw: std::collections::HashMap<String, String> = (0..MAX_HEADERS + 20)
+            .map(|i| kv(&format!("X-H-{i}"), "v"))
+            .collect();
+        let filtered = filter_request_headers(raw);
+        assert!(filtered.len() <= MAX_HEADERS);
+    }
+
+    #[test]
+    fn ssrf_blocks_default() {
+        std::env::remove_var("SIGNAL_ALLOW_LOCAL");
+        assert!(should_block("localhost"));
+        assert!(should_block("127.0.0.1"));
+        assert!(should_block("10.0.0.5"));
+        assert!(should_block("192.168.1.1"));
+        assert!(should_block("172.16.0.1"));
+        assert!(should_block("169.254.1.1"));
+        assert!(!should_block("example.com"));
+    }
+
+    #[test]
+    fn ssrf_opt_in_unblocks() {
+        std::env::set_var("SIGNAL_ALLOW_LOCAL", "1");
+        assert!(!should_block("localhost"));
+        assert!(!should_block("127.0.0.1"));
+        std::env::remove_var("SIGNAL_ALLOW_LOCAL");
+    }
+
+    #[test]
+    fn is_text_content_type_recognises_json_and_xml_variants() {
+        assert!(is_text_content_type(""));
+        assert!(is_text_content_type("application/json"));
+        assert!(is_text_content_type("application/vnd.api+json; charset=utf-8"));
+        assert!(is_text_content_type("application/ld+json"));
+        assert!(is_text_content_type("text/html"));
+        assert!(!is_text_content_type("image/png"));
+        assert!(!is_text_content_type("application/octet-stream"));
+    }
 }

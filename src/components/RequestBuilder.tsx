@@ -8,6 +8,7 @@ import { executeRequest } from "@/lib/executor";
 import { parseCurl, toCurl } from "@/lib/curl";
 import { generateSnippet, type SnippetLang } from "@/lib/snippets";
 import { uid } from "@/lib/id";
+import { redactRequest } from "@/lib/secrets";
 
 const METHODS: Method[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 const BODY_MODES: BodyMode[] = ["none", "json", "text", "xml", "form-urlencoded", "form-data", "graphql"];
@@ -85,10 +86,14 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
       };
       const result = await executeRequest(draft, { scope });
       setTabResponse(tab.id, result.response, result.tests, result.logs);
+      // Redact before persisting to history: the raw Authorization
+      // header, Bearer tokens, Cookie, X-Api-Key, oauth tokens etc. get
+      // replaced with [REDACTED]. The original request still lives on
+      // the tab for immediate re-send; history is for browsing only.
       pushHistory({
         id: uid("hist"),
         timestamp: Date.now(),
-        request: result.request,
+        request: redactRequest(result.request),
         response: result.response,
         testResults: result.tests,
       });
@@ -145,10 +150,10 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
 
       <div className="p-3 overflow-auto">
         {activeTab === "params" && (
-          <KVEditor rows={draft.params} onChange={(rows) => updateDraft(tab.id, { params: rows })} keyPlaceholder="param" />
+          <KVEditor rows={draft.params} onChange={(rows) => updateDraft(tab.id, { params: rows })} keyPlaceholder="param" secretDetect="params" />
         )}
         {activeTab === "headers" && (
-          <KVEditor rows={draft.headers} onChange={(rows) => updateDraft(tab.id, { headers: rows })} keyPlaceholder="Header-Name" />
+          <KVEditor rows={draft.headers} onChange={(rows) => updateDraft(tab.id, { headers: rows })} keyPlaceholder="Header-Name" secretDetect="headers" />
         )}
         {activeTab === "auth" && <AuthEditor tab={tab} />}
         {activeTab === "body" && <BodyEditor tab={tab} />}

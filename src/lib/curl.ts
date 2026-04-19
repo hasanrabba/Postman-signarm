@@ -1,6 +1,7 @@
 import { uid } from "./id";
 import type { KeyValue, Method, SignalRequest } from "./types";
 import { emptyAuth } from "./auth";
+import { autoFlagSecretsOnRequest } from "./secrets";
 
 const METHODS: Method[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 
@@ -243,7 +244,7 @@ export function parseCurl(cmd: string): SignalRequest | null {
       })
     : [];
 
-  return {
+  return autoFlagSecretsOnRequest({
     id: uid("req"),
     name: url || "Imported from cURL",
     method,
@@ -260,7 +261,7 @@ export function parseCurl(cmd: string): SignalRequest | null {
     },
     preRequestScript: "",
     testScript: "",
-  };
+  });
 }
 
 function looksLikeJson(s: string): boolean {

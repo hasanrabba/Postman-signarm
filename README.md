@@ -134,6 +134,42 @@ Build artifacts:
 | `src-tauri/target/release/bundle/msi/Signarm Signal_0.1.0_x64_en-US.msi` | Windows Installer |
 | `src-tauri/target/release/bundle/nsis/Signarm Signal_0.1.0_x64-setup.exe` | NSIS installer |
 
+## Security posture
+
+Signarm Signal is a local API client — the threats worth caring about are
+leaking your credentials on disk or through logs, and a compromised
+frontend escalating into the host.
+
+**Mitigations already shipped:**
+
+| Layer | Mitigation |
+|---|---|
+| Data at rest | `KeyValue.secret` flag masks tokens in the UI; reveal toggle per row. History entries are **redacted** before being persisted to localStorage — Authorization, Cookie, X-API-Key, Bearer tokens, Basic creds, OAuth tokens, and common JSON body keys (`password`, `token`, `api_key`, …) are replaced with `[REDACTED]`. Raw request stays in-memory on the active tab for immediate replay. |
+| cURL import | `Authorization`, `Cookie`, `X-API-Key` and friends are **auto-flagged as secret** so pasted tokens are masked the moment they land in the UI. |
+| Proxy input | Rust `proxy_fetch` rejects URLs >4 KB, bodies >16 MB, and >256 headers; header values are capped at 8 KB. Method is allowlisted to GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS. |
+| Proxy response | Hop-by-hop and framing headers stripped (Content-Encoding, Content-Length, Transfer-Encoding, Connection, Keep-Alive, TE, Trailer, Upgrade). Forbidden request headers (Host, Cookie sent by default, etc.) are filtered. |
+| SSRF | Desktop build blocks loopback, private, link-local, and IPv6 ULA/link-local by default. Opt in with `SIGNAL_ALLOW_LOCAL=1`. Non-http(s) schemes always refused. |
+| Tauri IPC | Capability allowlist limits the frontend to core window/webview/event/path/resources permissions. No filesystem, shell, dialog, notification, or opener plugin exposure. |
+| CSP | `default-src 'self'; script-src 'self' 'unsafe-eval'` (the `unsafe-eval` is required for the user-script sandbox's `new Function`); `connect-src 'self' ipc:` — the frontend cannot exfiltrate directly, all network goes through `proxy_fetch`; `object-src 'none'; frame-ancestors 'none'; form-action 'none'`. |
+| Script sandbox | Pre-request and test scripts run in a `new Function` with `'use strict'` and shadowed `window`, `document`, `globalThis`, `self`, `top`, `parent`, `fetch`, `XMLHttpRequest`, `WebSocket`, `importScripts`. No DOM, no network, no storage. |
+| Supply chain | `npm audit` clean. `cargo audit` shows zero active CVEs — the only reported items are unmaintained-crate warnings in the Linux-only GTK bindings (not in the Windows path). |
+
+**Verification:** 46 JS assertions + 6 Rust unit tests cover secret
+detection, redaction, Rust input limits, and SSRF defaults.
+
+**Known limitations / future work:**
+
+- Secrets are stored in WebView2 localStorage unencrypted. On a
+  multi-user machine they are protected by Windows file ACLs
+  (`%LOCALAPPDATA%\com.signarm.signal\EBWebView\…`), but not by a
+  passphrase. A full encrypted vault with PBKDF2 + AES-GCM is in
+  `src/lib/vault.ts` but not wired into the default flow.
+- The app binary is unsigned. Code signing + MSIX packaging are still
+  TODO for Microsoft Store submission.
+- Script sandbox is best-effort, not a security boundary against
+  scripts you author yourself. Don't import scripts from untrusted
+  sources.
+
 ## Microsoft Store submission checklist
 
 Pieces shipped in this repo:
