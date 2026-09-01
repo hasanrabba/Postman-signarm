@@ -54,10 +54,13 @@ export async function executeRequest(
   Object.assign(preGlobal, pre.setGlobal);
   Object.assign(preCol, pre.setCollection);
 
+  // The env/global/collection tables are rebuilt so pre-request script writes
+  // are visible to resolution; every other scope is carried through untouched.
   const scope: VarScope = {
     global: toKV(preGlobal),
     environment: toKV(preEnv),
     collection: toKV(preCol),
+    secrets: opts.scope.secrets,
     data: opts.scope.data,
   };
 

@@ -35,7 +35,7 @@ Feature parity with Postman's core workflows, plus a few additions.
 ### Extras over Postman
 - **Command palette** (⌘/Ctrl+K) — fuzzy-find any request, run common commands
 - **Collection version history** — commit snapshots of a collection and revert to any prior version
-- **Encrypted secrets vault** — store secrets in AES-GCM-encrypted local storage (pass a passphrase)
+- **Encrypted secrets vault** — a passphrase-locked vault (PBKDF2-SHA256 → AES-GCM) in the sidebar; unlocked secrets resolve as `{{name}}` in any request and are masked out of history
 - **AI hook** — command palette stub ready to wire to your LLM of choice
 - **SSRF-safe proxy** — the server-side proxy refuses loopback, private, and link-local addresses
 
@@ -152,18 +152,23 @@ frontend escalating into the host.
 | Tauri IPC | Capability allowlist limits the frontend to core window/webview/event/path/resources permissions. No filesystem, shell, dialog, notification, or opener plugin exposure. |
 | CSP | `default-src 'self'; script-src 'self' 'unsafe-eval'` (the `unsafe-eval` is required for the user-script sandbox's `new Function`); `connect-src 'self' ipc:` — the frontend cannot exfiltrate directly, all network goes through `proxy_fetch`; `object-src 'none'; frame-ancestors 'none'; form-action 'none'`. |
 | Script sandbox | Pre-request and test scripts run in a `new Function` with `'use strict'` and shadowed `window`, `document`, `globalThis`, `self`, `top`, `parent`, `fetch`, `XMLHttpRequest`, `WebSocket`, `importScripts`. No DOM, no network, no storage. |
-| Supply chain | `npm audit` clean. `cargo audit` shows zero active CVEs — the only reported items are unmaintained-crate warnings in the Linux-only GTK bindings (not in the Windows path). |
+| Supply chain | `npm audit` reports one low dev-only advisory (esbuild dev server, Windows). `cargo audit` shows zero active CVEs — the only reported items are unmaintained-crate warnings in the Linux-only GTK bindings (not in the Windows path). |
 
-**Verification:** 46 JS assertions + 6 Rust unit tests cover secret
-detection, redaction, Rust input limits, and SSRF defaults.
+**Verification:** 151 unit tests + 37 smoke assertions cover secret
+detection, redaction, vault encryption, SSRF address handling, and the
+request pipeline; `scripts/e2e.ts` and `scripts/e2e-proxy.ts` exercise a
+running server end to end.
 
 **Known limitations / future work:**
 
-- Secrets are stored in WebView2 localStorage unencrypted. On a
-  multi-user machine they are protected by Windows file ACLs
+- Environment and collection variables are stored in WebView2
+  localStorage unencrypted. On a multi-user machine they are protected
+  by Windows file ACLs
   (`%LOCALAPPDATA%\com.signarm.signal\EBWebView\…`), but not by a
-  passphrase. A full encrypted vault with PBKDF2 + AES-GCM is in
-  `src/lib/vault.ts` but not wired into the default flow.
+  passphrase — put anything sensitive in the **vault** panel instead,
+  where values are encrypted at rest and only held in memory while
+  unlocked. The vault re-locks on every restart and has no recovery
+  path: forget the passphrase and the secrets are gone.
 - The app binary is unsigned. Code signing + MSIX packaging are still
   TODO for Microsoft Store submission.
 - Script sandbox is best-effort, not a security boundary against
@@ -245,7 +250,8 @@ src/
    ├─ executor.ts             ·· end-to-end send pipeline
    ├─ curl.ts                 ·· cURL import/export
    ├─ snippets.ts             ·· code generators
-   ├─ vault.ts                ·· AES-GCM secret storage
+   ├─ vault.ts                ·· PBKDF2 + AES-GCM secret storage
+   ├─ ssrf.ts                 ·· proxy address guard (loopback/private/IPv6)
    └─ id.ts                   ·· id helpers
 ```
 

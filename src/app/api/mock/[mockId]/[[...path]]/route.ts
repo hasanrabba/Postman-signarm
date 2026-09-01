@@ -11,7 +11,6 @@ type MockRoute = {
 };
 
 declare global {
-  // eslint-disable-next-line no-var
   var __signalMocks: Record<string, MockRoute[]> | undefined;
 }
 // Null-prototype: a mockId of "__proto__" would otherwise reassign the

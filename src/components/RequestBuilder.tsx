@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useStore, type TabState } from "@/lib/store";
 import type { AuthType, BodyMode, Method, SignalRequest } from "@/lib/types";
 import { KVEditor } from "./KVEditor";
@@ -9,6 +9,7 @@ import { parseCurl, toCurl } from "@/lib/curl";
 import { generateSnippet, type SnippetLang } from "@/lib/snippets";
 import { uid } from "@/lib/id";
 import { redactRequest } from "@/lib/secrets";
+import { secretsAsVars } from "@/lib/vault";
 
 const METHODS: Method[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 const BODY_MODES: BodyMode[] = ["none", "json", "text", "xml", "form-urlencoded", "form-data", "graphql"];
@@ -17,7 +18,7 @@ type Tab = "params" | "auth" | "headers" | "body" | "pre" | "tests" | "snippets"
 export function RequestBuilder({ tab }: { tab: TabState }) {
   const {
     updateDraft, setTabSending, setTabResponse, pushHistory, applyScriptUpdates,
-    globals, environments, activeEnvId, collections, collectionOrder,
+    globals, environments, activeEnvId, collections, collectionOrder, secrets,
     saveTabInPlace, saveDraft, findRequestLocation, createCollection,
   } = useStore();
   const draft = tab.draft;
@@ -28,24 +29,8 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
     [collections, draft.id]
   );
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      const isMac = /Mac/.test(navigator.platform);
-      if ((isMac ? e.metaKey : e.ctrlKey) && e.key.toLowerCase() === "s") {
-        e.preventDefault();
-        save();
-      }
-      if ((isMac ? e.metaKey : e.ctrlKey) && e.key === "Enter") {
-        e.preventDefault();
-        void send();
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab.id, draft]);
 
-  const save = () => {
+  const save = useCallback(() => {
     // Already tracked under a collection — write back in place.
     if (saveTabInPlace(tab.id)) return;
     const existingLoc = findRequestLocation(draft.id);
@@ -74,15 +59,16 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
     if (!destination || !useStore.getState().collections[destination]) return;
     const col = useStore.getState().collections[destination];
     saveDraft(tab.id, destination, col.rootFolderId);
-  };
+  }, [saveTabInPlace, tab.id, findRequestLocation, draft.id, collectionOrder, collections, createCollection, saveDraft]);
 
-  const send = async () => {
+  const send = useCallback(async () => {
     setTabSending(tab.id, true);
     try {
       const scope = {
         global: globals,
         environment: activeEnvId ? environments[activeEnvId]?.variables : undefined,
         collection: collection?.variables,
+        secrets: secretsAsVars(secrets),
       };
       const result = await executeRequest(draft, { scope });
       // Persist what the scripts wrote. Without this, sg.env.set() appears to
@@ -117,7 +103,7 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
       pushHistory({
         id: uid("hist"),
         timestamp: Date.now(),
-        request: redactRequest(result.request),
+        request: redactRequest(result.request, secrets.map((x) => x.value)),
         response: result.response,
         testResults: result.tests,
       });
@@ -127,7 +113,25 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
         elapsedMs: 0, sizeBytes: 0, error: (e as Error).message,
       }, [], []);
     }
-  };
+  }, [tab.id, draft, globals, environments, activeEnvId, collection, secrets, setTabSending, setTabResponse, pushHistory, applyScriptUpdates]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const isMac = /Mac/.test(navigator.platform);
+      if ((isMac ? e.metaKey : e.ctrlKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        save();
+      }
+      if ((isMac ? e.metaKey : e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        void send();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+    // Re-bound whenever the handlers change, so a shortcut never fires with a
+    // stale environment or collection captured from an earlier render.
+  }, [save, send]);
 
   return (
     <div className="flex flex-col">

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useStore, mergeVars } from "@/lib/store";
 import { executeRequest } from "@/lib/executor";
+import { secretsAsVars } from "@/lib/vault";
 import type { SignalResponse, SignalRequest, TestResult } from "@/lib/types";
 
 /**
@@ -13,7 +14,7 @@ import type { SignalResponse, SignalRequest, TestResult } from "@/lib/types";
  * use it — matching Postman's runner semantics.
  */
 export function Runner({ collectionId, onClose }: { collectionId: string; onClose: () => void }) {
-  const { collections, environments, activeEnvId, globals } = useStore();
+  const { collections, environments, activeEnvId, globals, secrets } = useStore();
   const col = collections[collectionId];
   const [running, setRunning] = useState(false);
   const [rows, setRows] = useState<{ name: string; response?: SignalResponse; tests: TestResult[] }[]>([]);
@@ -37,6 +38,7 @@ export function Runner({ collectionId, onClose }: { collectionId: string; onClos
           envOverrides
         ),
         collection: mergeVars(col.variables, collectionOverrides),
+        secrets: secretsAsVars(secrets),
       };
       const res = await executeRequest(r, { scope });
       Object.assign(envOverrides, res.envUpdates);

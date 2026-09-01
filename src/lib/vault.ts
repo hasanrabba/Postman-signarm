@@ -1,4 +1,4 @@
-import type { Secret } from "./types";
+import type { KeyValue, Secret } from "./types";
 
 const STORAGE_KEY = "signal.vault.v1";
 const PBKDF2_ITERATIONS = 310_000; // OWASP guidance for PBKDF2-HMAC-SHA256
@@ -29,6 +29,12 @@ async function deriveKey(passphrase: string, salt: Uint8Array): Promise<CryptoKe
     false,
     ["encrypt", "decrypt"]
   );
+}
+
+/** True when an encrypted vault has been written to this browser. */
+export function hasVault(): boolean {
+  try { return localStorage.getItem(STORAGE_KEY) !== null; }
+  catch { return false; }
 }
 
 export async function saveSecrets(secrets: Secret[], passphrase: string): Promise<void> {
@@ -92,4 +98,11 @@ function toBase64(bytes: Uint8Array): string {
 
 function fromBase64(b64: string): Uint8Array {
   return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+}
+
+/** Present unlocked secrets to the variable resolver as {{name}} entries. */
+export function secretsAsVars(secrets: Secret[]): KeyValue[] {
+  return secrets
+    .filter((x) => x.name)
+    .map((x) => ({ id: `sec_${x.id}`, key: x.name, value: x.value, enabled: true, secret: true }));
 }

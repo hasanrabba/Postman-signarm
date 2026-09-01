@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { Tabs } from "@/components/Tabs";
 import { RequestBuilder } from "@/components/RequestBuilder";
@@ -11,14 +11,21 @@ import { Runner } from "@/components/Runner";
 import { useStore } from "@/lib/store";
 
 export default function Home() {
-  const [hydrated, setHydrated] = useState(false);
+  // Subscribe to the persist middleware's own hydration flag rather than
+  // mirroring it into local state: setState inside an effect body triggers a
+  // cascading render, and this also stops us reporting "hydrated" before
+  // rehydrate() has actually finished.
+  const hydrated = useSyncExternalStore(
+    (cb) => useStore.persist.onFinishHydration(cb),
+    () => useStore.persist.hasHydrated(),
+    () => false
+  );
   const { tabs, activeTabId, openDraft, collectionOrder } = useStore();
   const active = tabs.find((t) => t.id === activeTabId);
   const [runner, setRunner] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     void useStore.persist.rehydrate();
-    setHydrated(true);
   }, []);
 
   useEffect(() => {

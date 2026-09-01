@@ -58,22 +58,31 @@ const REDACTED = "[REDACTED]";
 
 /** Return a copy of the request with secret fields replaced by [REDACTED].
  *  Used for history display and logging — never feed this back into a send. */
-export function redactRequest(req: SignalRequest): SignalRequest {
+export function redactRequest(req: SignalRequest, secretValues: string[] = []): SignalRequest {
+  // Vault values are resolved into the request before it is sent, so a secret
+  // can land in a header this module's name heuristics don't recognise.
+  // Masking the literal values closes that gap. Very short values are skipped
+  // — masking every "1" in a request would destroy it.
+  const literals = secretValues.filter((v) => v && v.length >= 4);
+  const maskLiterals = (value: string) =>
+    literals.reduce((acc, v) => acc.split(v).join(REDACTED), value);
+
   const redactKV = (list: KeyValue[], autoDetect: (n: string) => boolean) =>
     list.map((kv) =>
       kv.secret || autoDetect(kv.key)
         ? { ...kv, value: REDACTED }
-        : kv
+        : { ...kv, value: maskLiterals(kv.value) }
     );
   const auth = redactAuth(req.auth);
   return {
     ...req,
+    url: maskLiterals(req.url),
     headers: redactKV(req.headers, isSecretHeaderName),
     params: redactKV(req.params, isSecretParamName),
     auth,
     body: {
       ...req.body,
-      raw: redactBodyString(req.body.raw ?? ""),
+      raw: maskLiterals(redactBodyString(req.body.raw ?? "")),
       urlencoded: req.body.urlencoded
         ? redactKV(req.body.urlencoded, isSecretParamName)
         : req.body.urlencoded,

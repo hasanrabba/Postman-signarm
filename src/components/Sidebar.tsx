@@ -8,7 +8,7 @@ import { EditableName, type EditableNameHandle } from "./EditableName";
 import { confirmDialog } from "./ConfirmDialog";
 import { Icon } from "./Icon";
 
-type Panel = "collections" | "environments" | "history" | "mocks";
+type Panel = "collections" | "environments" | "vault" | "history" | "mocks";
 
 export function Sidebar() {
   const [panel, setPanel] = useState<Panel>("collections");
@@ -23,7 +23,7 @@ export function Sidebar() {
         <div className="ml-auto text-[10px] text-signal-muted">v0.1</div>
       </div>
       <nav className="flex text-xs border-b border-signal-border">
-        {(["collections", "environments", "history", "mocks"] as Panel[]).map((p) => (
+        {(["collections", "environments", "vault", "history", "mocks"] as Panel[]).map((p) => (
           <button
             key={p}
             className={`flex-1 py-2 ${panel === p ? "text-white bg-signal-bg" : "text-signal-muted"}`}
@@ -44,6 +44,7 @@ export function Sidebar() {
       <div className="flex-1 overflow-auto">
         {panel === "collections" && <CollectionsPanel search={search} />}
         {panel === "environments" && <EnvironmentsPanel />}
+        {panel === "vault" && <VaultPanel />}
         {panel === "history" && <HistoryPanel />}
         {panel === "mocks" && <MocksPanel />}
       </div>
@@ -399,7 +400,7 @@ function MiniVars({ vars, onChange }: { vars: MiniVar[]; onChange: (v: MiniVar[]
   const list: MiniVar[] = [...vars, { id: "__new", key: "", value: "", enabled: true }];
   const update = (id: string, patch: Partial<MiniVar>) => {
     if (id === "__new") {
-      onChange([...vars, { id: `kv_${Date.now()}`, key: "", value: "", enabled: true, ...patch }]);
+      onChange([...vars, { id: uid("kv"), key: "", value: "", enabled: true, ...patch }]);
       return;
     }
     onChange(vars.map((v) => (v.id === id ? { ...v, ...patch } : v)));
@@ -603,5 +604,126 @@ function IconButton({
     >
       {children}
     </button>
+  );
+}
+
+/**
+ * Secrets vault. Values are held in memory only for as long as the vault is
+ * unlocked; the encrypted blob is the only thing on disk, and closing the app
+ * re-locks it. Unlocked secrets resolve as {{name}} in any request.
+ */
+function VaultPanel() {
+  const {
+    vaultUnlocked, vaultExists, vaultError, secrets,
+    unlockVault, lockVault, addSecret, updateSecret, deleteSecret,
+  } = useStore();
+  const [passphrase, setPassphrase] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [name, setName] = useState("");
+  const [value, setValue] = useState("");
+  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
+
+  const unlock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!passphrase) return;
+    setBusy(true);
+    const ok = await unlockVault(passphrase);
+    setBusy(false);
+    if (ok) setPassphrase("");
+  };
+
+  if (!vaultUnlocked) {
+    return (
+      <form className="p-2 space-y-2" onSubmit={unlock}>
+        <div className="text-xs text-signal-muted">
+          {vaultExists
+            ? "Enter your passphrase to unlock the vault."
+            : "Choose a passphrase to create an encrypted vault. There is no recovery — if you forget it, the secrets are gone."}
+        </div>
+        <input
+          className="input w-full"
+          type="password"
+          autoComplete="off"
+          placeholder="passphrase"
+          aria-label="Vault passphrase"
+          value={passphrase}
+          onChange={(e) => setPassphrase(e.target.value)}
+        />
+        <button className="btn w-full" type="submit" disabled={busy || !passphrase}>
+          {busy ? "Unlocking…" : vaultExists ? "Unlock vault" : "Create vault"}
+        </button>
+        {vaultError && <div className="text-xs text-signal-err">{vaultError}</div>}
+      </form>
+    );
+  }
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    await addSecret(name.trim(), value);
+    setName(""); setValue("");
+  };
+
+  return (
+    <div className="p-2 space-y-2">
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-signal-ok">Unlocked</span>
+        <button className="btn ml-auto" onClick={lockVault}>Lock</button>
+      </div>
+      <div className="text-[11px] text-signal-muted">
+        Use a secret in any request as <code>{"{{name}}"}</code>. Values never leave this browser unencrypted.
+      </div>
+
+      <form className="space-y-1" onSubmit={add}>
+        <input
+          className="input w-full" placeholder="name" aria-label="Secret name"
+          value={name} onChange={(e) => setName(e.target.value)}
+        />
+        <input
+          className="input w-full" type="password" autoComplete="off"
+          placeholder="value" aria-label="Secret value"
+          value={value} onChange={(e) => setValue(e.target.value)}
+        />
+        <button className="btn w-full" type="submit" disabled={!name.trim()}>Add secret</button>
+      </form>
+
+      {secrets.length === 0 && (
+        <div className="text-xs text-signal-muted">No secrets yet.</div>
+      )}
+      {secrets.map((sec) => (
+        <div key={sec.id} className="border border-signal-border rounded p-2 space-y-1">
+          <div className="flex items-center gap-2">
+            <code className="text-xs truncate">{`{{${sec.name}}}`}</code>
+            <button
+              className="btn ml-auto text-[10px]"
+              onClick={() => setRevealed((r) => ({ ...r, [sec.id]: !r[sec.id] }))}
+              aria-label={revealed[sec.id] ? `Hide ${sec.name}` : `Reveal ${sec.name}`}
+            >
+              {revealed[sec.id] ? "Hide" : "Reveal"}
+            </button>
+            <button
+              className="btn text-[10px]"
+              onClick={async () => {
+                if (await confirmDialog({
+                  title: "Delete secret",
+                  message: `Delete “${sec.name}”? Requests using {{${sec.name}}} will stop resolving.`,
+                  confirmLabel: "Delete",
+                })) await deleteSecret(sec.id);
+              }}
+              aria-label={`Delete ${sec.name}`}
+            >
+              Delete
+            </button>
+          </div>
+          <input
+            className="input w-full text-xs"
+            type={revealed[sec.id] ? "text" : "password"}
+            aria-label={`Value of ${sec.name}`}
+            value={sec.value}
+            onChange={(e) => void updateSecret(sec.id, { value: e.target.value })}
+          />
+        </div>
+      ))}
+    </div>
   );
 }

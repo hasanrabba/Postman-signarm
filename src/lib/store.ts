@@ -13,10 +13,12 @@ import type {
   SignalRequest,
   SignalResponse,
   TestResult,
+  Secret,
 } from "./types";
 import { uid } from "./id";
 import { emptyRequest as emptyRequestDefault } from "./defaults";
 import { restoreRedacted } from "./secrets";
+import { loadSecrets, saveSecrets, hasVault, VaultDecryptError } from "./vault";
 
 export interface TabState {
   id: string;
@@ -108,6 +110,18 @@ interface Store {
    */
   openFromHistory: (entryId: string) => void;
 
+  // vault — secrets live in memory only; the encrypted blob is the only
+  // thing that touches disk, under its own storage key.
+  vaultUnlocked: boolean;
+  vaultExists: boolean;
+  vaultError?: string;
+  secrets: Secret[];
+  unlockVault: (passphrase: string) => Promise<boolean>;
+  lockVault: () => void;
+  addSecret: (name: string, value: string) => Promise<void>;
+  updateSecret: (id: string, patch: { name?: string; value?: string }) => Promise<void>;
+  deleteSecret: (id: string) => Promise<void>;
+
   // mocks
   createMock: (name: string) => string;
   updateMock: (id: string, patch: Partial<MockServer>) => void;
@@ -142,6 +156,23 @@ export function mergeVars(
 
 const hasKeys = (o?: Record<string, string>) => !!o && Object.keys(o).length > 0;
 
+/**
+ * The vault passphrase is held here rather than in store state: state is what
+ * the persist middleware serialises, and the passphrase must never be written
+ * anywhere. It is cleared by lockVault() and lost on reload, which is the
+ * intended behaviour — the vault re-locks on every restart.
+ */
+let vaultPassphrase: string | undefined;
+
+async function persistVault(
+  next: Secret[],
+  set: (partial: Partial<Store>) => void
+): Promise<void> {
+  if (!vaultPassphrase) throw new Error("Vault is locked.");
+  await saveSecrets(next, vaultPassphrase);
+  set({ secrets: next, vaultExists: true });
+}
+
 function newCollection(name: string): Collection {
   const rootId = uid("fld");
   const root: Folder = { id: rootId, name, requestIds: [], folderIds: [] };
@@ -167,6 +198,10 @@ export const useStore = create<Store>()(
       globals: [],
       history: [],
       mocks: {},
+      vaultUnlocked: false,
+      vaultExists: hasVault(),
+      vaultError: undefined,
+      secrets: [],
       tabs: [],
       activeTabId: undefined,
       activeEnvId: undefined,
@@ -521,6 +556,40 @@ export const useStore = create<Store>()(
         const loc = s.findRequestLocation(entry.request.id);
         const live = loc ? s.collections[loc.collectionId]?.requests[entry.request.id] : undefined;
         s.openDraft(restoreRedacted(entry.request, live));
+      },
+
+      unlockVault: async (passphrase) => {
+        try {
+          const secrets = await loadSecrets(passphrase);
+          vaultPassphrase = passphrase;
+          set({ secrets, vaultUnlocked: true, vaultExists: true, vaultError: undefined });
+          // A vault that didn't exist yet is created on first write; persist
+          // now so the passphrase is locked in even before a secret is added.
+          if (!hasVault()) await saveSecrets(secrets, passphrase);
+          return true;
+        } catch (e) {
+          set({
+            vaultError: e instanceof VaultDecryptError
+              ? e.message
+              : `Could not open the vault: ${(e as Error).message}`,
+          });
+          return false;
+        }
+      },
+      lockVault: () => {
+        vaultPassphrase = undefined;
+        set({ secrets: [], vaultUnlocked: false, vaultError: undefined, vaultExists: hasVault() });
+      },
+      addSecret: async (name, value) => {
+        const next = [...get().secrets, { id: uid("sec"), name, value, createdAt: Date.now() }];
+        await persistVault(next, set);
+      },
+      updateSecret: async (id, patch) => {
+        const next = get().secrets.map((x) => (x.id === id ? { ...x, ...patch } : x));
+        await persistVault(next, set);
+      },
+      deleteSecret: async (id) => {
+        await persistVault(get().secrets.filter((x) => x.id !== id), set);
       },
 
       createMock: (name) => {

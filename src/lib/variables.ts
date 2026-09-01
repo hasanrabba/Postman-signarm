@@ -6,6 +6,9 @@ export type VarScope = {
   global?: KeyValue[];
   environment?: KeyValue[];
   collection?: KeyValue[];
+  /** Unlocked vault secrets. Outrank environments so a secret is used in
+   *  preference to a plaintext variable of the same name. */
+  secrets?: KeyValue[];
   data?: Record<string, string>;
 };
 
@@ -20,10 +23,11 @@ export function resolveVars(input: string, scope: VarScope): string {
       if (kv.enabled !== false && kv.key) table[kv.key] = kv.value;
     }
   };
-  // priority (lowest to highest): global → collection → environment → data
+  // priority (lowest to highest): global → collection → environment → secrets → data
   add(scope.global);
   add(scope.collection);
   add(scope.environment);
+  add(scope.secrets);
   if (scope.data) Object.assign(table, scope.data);
 
   return input.replace(TOKEN, (_, name) => {

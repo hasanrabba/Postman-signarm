@@ -1,6 +1,5 @@
 import { describe, expect, test, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import Home from "@/app/page";
 import { useStore } from "@/lib/store";
 
