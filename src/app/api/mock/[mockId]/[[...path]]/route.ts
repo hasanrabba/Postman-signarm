@@ -14,7 +14,9 @@ declare global {
   // eslint-disable-next-line no-var
   var __signalMocks: Record<string, MockRoute[]> | undefined;
 }
-const mocks: Record<string, MockRoute[]> = (globalThis.__signalMocks ??= {});
+// Null-prototype: a mockId of "__proto__" would otherwise reassign the
+// prototype of the shared registry instead of storing a route set.
+const mocks: Record<string, MockRoute[]> = (globalThis.__signalMocks ??= Object.create(null));
 
 type Ctx = { params: Promise<{ mockId: string; path?: string[] }> };
 

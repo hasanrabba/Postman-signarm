@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { lookup } from "node:dns/promises";
+import { isBlockedHostname, isBlockedIp, normalizeHostname } from "@/lib/ssrf";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,27 +13,53 @@ interface ProxyPayload {
   timeoutMs?: number;
 }
 
-// Block SSRF to loopback/private networks at the proxy boundary.
-// Set SIGNAL_PROXY_ALLOW_LOCAL=1 to permit localhost/private ranges for
-// development or self-hosting against internal services.
-function isBlockedHost(hostname: string): boolean {
-  if (process.env.SIGNAL_PROXY_ALLOW_LOCAL === "1") return false;
-  const h = hostname.toLowerCase();
-  if (h === "localhost" || h === "127.0.0.1" || h === "::1") return true;
-  if (h.endsWith(".localhost")) return true;
-  // IPv4 private ranges
-  const m = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-  if (m) {
-    const [a, b] = [Number(m[1]), Number(m[2])];
-    if (a === 10) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 0) return true;
+const MAX_REDIRECTS = 10;
+
+/** Set SIGNAL_PROXY_ALLOW_LOCAL=1 to reach localhost/private ranges. */
+function allowLocal(): boolean {
+  return process.env.SIGNAL_PROXY_ALLOW_LOCAL === "1";
+}
+
+/**
+ * Decide whether `target` is safe to connect to.
+ *
+ * A hostname is not evidence of where a request lands, so anything that
+ * isn't already a blocked literal gets resolved and every returned address
+ * is checked. A name that resolves to loopback or RFC1918 space is refused
+ * exactly like the literal address would be.
+ *
+ * Residual risk: between this lookup and the one the HTTP stack performs
+ * there is a small DNS-rebinding window. Closing it entirely means pinning
+ * the connection to the address validated here, which needs a custom
+ * dispatcher; the check below stops every non-adversarial case and all
+ * static bypasses (encoded literals, redirects, names pointing inward).
+ */
+async function checkTarget(target: URL): Promise<string | null> {
+  if (allowLocal()) return null;
+  if (!/^https?:$/.test(target.protocol)) {
+    return `Only http/https are allowed (got ${target.protocol}).`;
   }
-  if (h.startsWith("fc") || h.startsWith("fd")) return true; // IPv6 ULA
-  if (h.startsWith("fe80")) return true;                     // link-local
-  return false;
+  const host = normalizeHostname(target.hostname);
+  if (isBlockedHostname(host)) {
+    return `Host ${target.hostname} is blocked by the proxy.`;
+  }
+  // Already a public IP literal — nothing to resolve.
+  if (isBlockedIp(host) === false && /^[0-9a-f:.]+$/.test(host) && (host.includes(":") || /^\d+\.\d+\.\d+\.\d+$/.test(host))) {
+    return null;
+  }
+  let addrs: { address: string }[];
+  try {
+    addrs = await lookup(host, { all: true });
+  } catch {
+    return `Could not resolve host ${target.hostname}.`;
+  }
+  if (addrs.length === 0) return `Could not resolve host ${target.hostname}.`;
+  for (const a of addrs) {
+    if (isBlockedIp(a.address)) {
+      return `Host ${target.hostname} resolves to a blocked address (${a.address}).`;
+    }
+  }
+  return null;
 }
 
 // Headers the client must not set on the outgoing request. `fetch` forbids most
@@ -66,6 +94,22 @@ function filterRequestHeaders(raw: Record<string, string>): Record<string, strin
   return out;
 }
 
+function dropAuthHeaders(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    const lk = k.toLowerCase();
+    if (lk === "authorization" || lk === "cookie") continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+function blocked(error: string, elapsedMs = 0, statusText = "Blocked") {
+  return NextResponse.json({
+    status: 0, statusText, headers: {}, body: "", sizeBytes: 0, elapsedMs, error,
+  });
+}
+
 export async function POST(req: NextRequest) {
   const started = Date.now();
   let payload: ProxyPayload;
@@ -81,65 +125,92 @@ export async function POST(req: NextRequest) {
   let target: URL;
   try { target = new URL(payload.url); }
   catch {
-    return NextResponse.json({
-      status: 0, statusText: "Invalid URL", headers: {}, body: "", sizeBytes: 0, elapsedMs: 0,
-      error: `Invalid URL: ${payload.url}`,
-    });
+    return blocked(`Invalid URL: ${payload.url}`, 0, "Invalid URL");
   }
 
   if (!/^https?:$/.test(target.protocol)) {
-    return NextResponse.json({
-      status: 0, statusText: "Blocked", headers: {}, body: "", sizeBytes: 0, elapsedMs: 0,
-      error: `Only http/https are allowed (got ${target.protocol}).`,
-    });
+    return blocked(`Only http/https are allowed (got ${target.protocol}).`);
   }
-  if (isBlockedHost(target.hostname)) {
-    return NextResponse.json({
-      status: 0, statusText: "Blocked", headers: {}, body: "", sizeBytes: 0, elapsedMs: 0,
-      error: `Host ${target.hostname} is blocked by the proxy.`,
-    });
-  }
+  const firstHopError = await checkTarget(target);
+  if (firstHopError) return blocked(firstHopError, Date.now() - started);
 
   const controller = new AbortController();
   const timeoutMs = Math.min(Math.max(payload.timeoutMs ?? 30_000, 1_000), 120_000);
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const method = (payload.method || "GET").toUpperCase();
-    const hasBody = !["GET", "HEAD"].includes(method) && payload.body !== undefined && payload.body !== "";
-    const outHeaders = filterRequestHeaders(payload.headers ?? {});
-    const res = await fetch(target.toString(), {
-      method,
-      headers: outHeaders,
-      body: hasBody ? payload.body : undefined,
-      redirect: "follow",
-      signal: controller.signal,
-    });
+    let method = (payload.method || "GET").toUpperCase();
+    let outHeaders = filterRequestHeaders(payload.headers ?? {});
+    let body =
+      !["GET", "HEAD"].includes(method) && payload.body !== undefined && payload.body !== ""
+        ? payload.body
+        : undefined;
+
+    // Follow redirects by hand so the SSRF guard runs on every hop. `fetch`
+    // with redirect:"follow" would validate only the first URL and then
+    // happily land on 127.0.0.1.
+    let current = target;
+    let res: Response | undefined;
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      res = await fetch(current.toString(), {
+        method,
+        headers: outHeaders,
+        body,
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      const location = res.headers.get("location");
+      const isRedirect = res.status >= 300 && res.status < 400 && location;
+      if (!isRedirect) break;
+      if (hop === MAX_REDIRECTS) {
+        return blocked(`Too many redirects (>${MAX_REDIRECTS}).`, Date.now() - started, "Error");
+      }
+      let next: URL;
+      try { next = new URL(location, current); }
+      catch { return blocked(`Invalid redirect target: ${location}`, Date.now() - started); }
+
+      const hopError = await checkTarget(next);
+      if (hopError) {
+        return blocked(`Redirect ${res.status} to ${next.href} refused — ${hopError}`, Date.now() - started);
+      }
+      // Credentials must not follow a redirect to another origin.
+      if (next.origin !== current.origin) outHeaders = dropAuthHeaders(outHeaders);
+      // 303, and 301/302 on a non-GET/HEAD, degrade to GET without a body.
+      if (res.status === 303 || ((res.status === 301 || res.status === 302) && !["GET", "HEAD"].includes(method))) {
+        method = "GET";
+        body = undefined;
+      }
+      current = next;
+    }
+
+    if (!res) return blocked("No response from upstream.", Date.now() - started, "Error");
+
     const buf = await res.arrayBuffer();
     const ct = res.headers.get("content-type") || "";
     const isText = /^(text\/|application\/(json|xml|javascript|x-www-form-urlencoded|graphql|ld\+json|problem\+json|vnd\.api\+json))/i.test(ct) || !ct;
-    let body = "";
+    let respBody = "";
     let bodyIsBase64 = false;
     if (isText) {
-      body = new TextDecoder("utf-8", { fatal: false }).decode(buf);
+      respBody = new TextDecoder("utf-8", { fatal: false }).decode(buf);
     } else {
-      body = Buffer.from(buf).toString("base64");
+      respBody = Buffer.from(buf).toString("base64");
       bodyIsBase64 = true;
     }
     const headers: Record<string, string> = {};
     res.headers.forEach((v, k) => {
       if (!STRIP_RESPONSE_HEADERS.has(k.toLowerCase())) headers[k] = v;
     });
+    const finalUrl = current.toString();
     return NextResponse.json({
       status: res.status,
       statusText: res.statusText,
       headers,
-      body,
+      body: respBody,
       bodyIsBase64,
       elapsedMs: Date.now() - started,
       sizeBytes: buf.byteLength,
       contentType: ct,
-      finalUrl: res.url !== target.toString() ? res.url : undefined,
+      finalUrl: finalUrl !== target.toString() ? finalUrl : undefined,
     });
   } catch (e) {
     const err = e as Error;

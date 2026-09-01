@@ -106,39 +106,133 @@ fn is_text_content_type(ct: &str) -> bool {
         || lc.starts_with("application/vnd.api+json")
 }
 
-/// SSRF guard: reject non-http(s) and — by default — reject loopback,
-/// private, and link-local addresses. Users who are deliberately testing
-/// their own LAN services can opt out with `SIGNAL_ALLOW_LOCAL=1`. This
-/// is the opposite default of the web build, where the bundled Next.js
-/// mock server uses loopback as a legitimate destination; in the desktop
-/// build the Rust-side mock server lives in-process, not over HTTP, so
-/// there's no reason a user's request should be hitting loopback.
+/// SSRF guard.
+///
+/// The rule: only connect to publicly-routable addresses. A hostname says
+/// nothing about where a request lands — a name can resolve to 127.0.0.1,
+/// and a redirect can carry an allowed first hop somewhere private — so
+/// callers resolve the name and check every address, on every hop.
+/// Users deliberately testing their own LAN opt out with `SIGNAL_ALLOW_LOCAL=1`.
+fn allow_local() -> bool {
+    std::env::var("SIGNAL_ALLOW_LOCAL").ok().as_deref() == Some("1")
+}
+
+/// Strip the brackets the URL parser keeps around IPv6 literals, plus any
+/// single trailing dot (`localhost.` is `localhost`).
+fn normalize_host(host: &str) -> String {
+    let h = host.trim().to_ascii_lowercase();
+    let h = h.strip_prefix('[').and_then(|x| x.strip_suffix(']')).unwrap_or(&h);
+    h.strip_suffix('.').unwrap_or(h).to_string()
+}
+
+fn is_blocked_v4(o: [u8; 4]) -> bool {
+    match (o[0], o[1]) {
+        (0, _) => true,                          // 0.0.0.0/8
+        (10, _) => true,                         // private
+        (100, b) if (64..=127).contains(&b) => true, // CGNAT 100.64/10
+        (127, _) => true,                        // entire loopback /8
+        (169, 254) => true,                      // link-local
+        (172, b) if (16..=31).contains(&b) => true,  // private
+        (192, 0) if o[2] == 0 => true,           // IETF protocol assignments
+        (192, 168) => true,                      // private
+        (198, 18) | (198, 19) => true,           // benchmarking
+        (a, _) if a >= 224 => true,              // multicast + reserved
+        _ => false,
+    }
+}
+
+fn is_blocked_v6(v6: std::net::Ipv6Addr) -> bool {
+    if v6.is_loopback() || v6.is_unspecified() {
+        return true;
+    }
+    // IPv4-mapped / IPv4-compatible / NAT64 all embed a v4 address.
+    let seg = v6.segments();
+    let mapped = (seg[0..5].iter().all(|&x| x == 0) && seg[5] == 0xffff)
+        || seg[0..6].iter().all(|&x| x == 0)
+        || (seg[0] == 0x64 && seg[1] == 0xff9b && seg[2..6].iter().all(|&x| x == 0));
+    if mapped {
+        let o = seg[6].to_be_bytes();
+        let p = seg[7].to_be_bytes();
+        return is_blocked_v4([o[0], o[1], p[0], p[1]]);
+    }
+    if seg[0] & 0xfe00 == 0xfc00 { return true; } // fc00::/7 unique-local
+    if seg[0] & 0xffc0 == 0xfe80 { return true; } // fe80::/10 link-local
+    if seg[0] & 0xff00 == 0xff00 { return true; } // ff00::/8 multicast
+    false
+}
+
+/// True when `ip` is a literal address we must never connect to.
+fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => is_blocked_v4(v4.octets()),
+        std::net::IpAddr::V6(v6) => is_blocked_v6(v6),
+    }
+}
+
+/// Hostnames rejected without a lookup. Anything else must be resolved.
 fn should_block(host: &str) -> bool {
-    if std::env::var("SIGNAL_ALLOW_LOCAL").ok().as_deref() == Some("1") {
+    if allow_local() {
         return false;
     }
-    let h = host.to_ascii_lowercase();
-    if h == "localhost" || h == "127.0.0.1" || h == "::1" || h.ends_with(".localhost") {
+    let h = normalize_host(host);
+    if h.is_empty()
+        || h == "localhost"
+        || h.ends_with(".localhost")
+        || h == "local"
+        || h.ends_with(".local")
+        || h.ends_with(".internal")
+        || h.ends_with(".home.arpa")
+    {
         return true;
     }
     if let Ok(ip) = h.parse::<std::net::IpAddr>() {
-        match ip {
-            std::net::IpAddr::V4(v4) => {
-                let o = v4.octets();
-                if o[0] == 10 { return true; }
-                if o[0] == 172 && (16..=31).contains(&o[1]) { return true; }
-                if o[0] == 192 && o[1] == 168 { return true; }
-                if o[0] == 169 && o[1] == 254 { return true; }
-                if o[0] == 0 { return true; }
-            }
-            std::net::IpAddr::V6(v6) => {
-                let s = v6.to_string();
-                if s.starts_with("fc") || s.starts_with("fd") { return true; }
-                if s.starts_with("fe80") { return true; }
-            }
-        }
+        return is_blocked_ip(ip);
     }
     false
+}
+
+/// Full check for a URL about to be fetched: scheme, hostname, and every
+/// address the hostname resolves to. Returns an error message when refused.
+fn check_url(u: &Url) -> Option<String> {
+    if allow_local() {
+        return None;
+    }
+    if !matches!(u.scheme(), "http" | "https") {
+        return Some(format!("Only http/https are allowed (got {}).", u.scheme()));
+    }
+    let host = match u.host_str() {
+        Some(h) => h,
+        None => return Some("URL has no host.".to_string()),
+    };
+    if should_block(host) {
+        return Some(format!("Host {host} is blocked by the proxy."));
+    }
+    let normalized = normalize_host(host);
+    // A literal IP needs no lookup; should_block already vetted it.
+    if normalized.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+    let port = u.port_or_known_default().unwrap_or(80);
+    use std::net::ToSocketAddrs;
+    match (normalized.as_str(), port).to_socket_addrs() {
+        Ok(addrs) => {
+            let mut any = false;
+            for sa in addrs {
+                any = true;
+                if is_blocked_ip(sa.ip()) {
+                    return Some(format!(
+                        "Host {host} resolves to a blocked address ({}).",
+                        sa.ip()
+                    ));
+                }
+            }
+            if !any {
+                return Some(format!("Could not resolve host {host}."));
+            }
+            None
+        }
+        Err(_) => Some(format!("Could not resolve host {host}.")),
+    }
 }
 
 #[tauri::command]
@@ -187,14 +281,8 @@ pub async fn proxy_fetch(payload: ProxyPayload) -> Result<ProxyResponse, String>
             started.elapsed().as_millis(),
         ));
     }
-    if let Some(host) = parsed.host_str() {
-        if should_block(host) {
-            return Ok(err(
-                "Blocked",
-                format!("Host {} is blocked by the proxy.", host),
-                started.elapsed().as_millis(),
-            ));
-        }
+    if let Some(reason) = check_url(&parsed) {
+        return Ok(err("Blocked", reason, started.elapsed().as_millis()));
     }
 
     let timeout = Duration::from_millis(
@@ -211,8 +299,25 @@ pub async fn proxy_fetch(payload: ProxyPayload) -> Result<ProxyResponse, String>
         other => return Err(format!("Unsupported method: {other}")),
     };
 
+    // Re-run the guard on every redirect hop; the default policy would
+    // validate only the first URL and then happily land on 127.0.0.1.
+    let redirect_policy = reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 10 {
+            return attempt.error("too many redirects (>10)");
+        }
+        // Build the message first so the borrow of `attempt` ends before
+        // `attempt.error(..)` consumes it.
+        let refusal = check_url(attempt.url())
+            .map(|reason| format!("redirect to {} refused — {reason}", attempt.url()));
+        match refusal {
+            Some(msg) => attempt.error(msg),
+            None => attempt.follow(),
+        }
+    });
+
     let client = match reqwest::Client::builder()
         .timeout(timeout)
+        .redirect(redirect_policy)
         .user_agent(concat!("SignarmSignal/", env!("CARGO_PKG_VERSION")))
         .build()
     {

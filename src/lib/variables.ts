@@ -11,7 +11,9 @@ export type VarScope = {
 
 export function resolveVars(input: string, scope: VarScope): string {
   if (!input) return input;
-  const table: Record<string, string> = {};
+  // Null-prototype: otherwise `{{toString}}`, `{{constructor}}` and friends
+  // resolve to inherited Object.prototype members instead of being left alone.
+  const table: Record<string, string> = Object.create(null);
   const add = (list?: KeyValue[]) => {
     if (!list) return;
     for (const kv of list) {

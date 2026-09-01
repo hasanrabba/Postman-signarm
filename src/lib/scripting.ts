@@ -38,12 +38,17 @@ export function runScript(script: string, ctx: ScriptContext): ScriptOutput {
     try { return JSON.parse(ctx.response.body); } catch { return undefined; }
   })();
 
+  const own = (o: Record<string, string>, k: string) =>
+    Object.prototype.hasOwnProperty.call(o, k);
+
   const variables = {
     // Convenience namespace that checks env → globals → collection in order.
+    // Own-property checks only: `in` would hand back Object.prototype members
+    // (`toString`, `constructor`, …) for names the user never defined.
     get: (k: string) => {
-      if (k in ctx.env) return ctx.env[k];
-      if (k in ctx.global) return ctx.global[k];
-      if (k in ctx.collection) return ctx.collection[k];
+      if (own(ctx.env, k)) return ctx.env[k];
+      if (own(ctx.global, k)) return ctx.global[k];
+      if (own(ctx.collection, k)) return ctx.collection[k];
       return undefined;
     },
   };
