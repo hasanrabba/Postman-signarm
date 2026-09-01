@@ -420,7 +420,7 @@ function MiniVars({ vars, onChange }: { vars: MiniVar[]; onChange: (v: MiniVar[]
 }
 
 function HistoryPanel() {
-  const { history, clearHistory, openDraft } = useStore();
+  const { history, clearHistory, openFromHistory } = useStore();
   if (!history.length) return <div className="text-xs text-signal-muted p-2">No history yet. Send a request to populate this list.</div>;
   return (
     <div className="p-2 space-y-1">
@@ -429,7 +429,7 @@ function HistoryPanel() {
         <button
           key={h.id}
           className="w-full text-left px-2 py-1 text-xs hover:bg-signal-bg rounded border border-signal-border"
-          onClick={() => openDraft(h.request)}
+          onClick={() => openFromHistory(h.id)}
         >
           <div className="flex items-center gap-2">
             <span className={`method-pill method-${h.request.method}`}>{h.request.method}</span>

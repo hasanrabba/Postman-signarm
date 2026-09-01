@@ -16,6 +16,7 @@ import type {
 } from "./types";
 import { uid } from "./id";
 import { emptyRequest as emptyRequestDefault } from "./defaults";
+import { restoreRedacted } from "./secrets";
 
 export interface TabState {
   id: string;
@@ -83,10 +84,29 @@ interface Store {
     logs: string[]
   ) => void;
   setTabSending: (tabId: string, sending: boolean) => void;
+  /**
+   * Persist variable writes made by pre-request and test scripts
+   * (sg.env.set / sg.globals.set / sg.collection.set). Environment writes
+   * need an active environment; collection writes need an owning collection.
+   */
+  applyScriptUpdates: (
+    updates: {
+      env?: Record<string, string>;
+      globals?: Record<string, string>;
+      collection?: Record<string, string>;
+    },
+    collectionId?: string
+  ) => void;
 
   // history
   pushHistory: (entry: HistoryEntry) => void;
   clearHistory: () => void;
+  /**
+   * Re-open a history entry as a tab. History stores a redacted copy, so
+   * credential values are restored from the live request where one still
+   * exists — otherwise the entry opens with [REDACTED] left visible.
+   */
+  openFromHistory: (entryId: string) => void;
 
   // mocks
   createMock: (name: string) => string;
@@ -95,6 +115,32 @@ interface Store {
 }
 
 export const emptyRequest = emptyRequestDefault;
+
+/**
+ * Upsert `overrides` into a KeyValue list: existing keys are updated in
+ * place (and re-enabled), unknown keys are appended.
+ */
+export function mergeVars(
+  base: KeyValue[] | undefined,
+  overrides: Record<string, string>
+): KeyValue[] {
+  const result: KeyValue[] = [];
+  const seen = new Set<string>();
+  for (const kv of base ?? []) {
+    if (Object.prototype.hasOwnProperty.call(overrides, kv.key)) {
+      result.push({ ...kv, value: overrides[kv.key], enabled: true });
+      seen.add(kv.key);
+    } else {
+      result.push(kv);
+    }
+  }
+  for (const [k, v] of Object.entries(overrides)) {
+    if (!seen.has(k)) result.push({ id: uid("ov"), key: k, value: v, enabled: true });
+  }
+  return result;
+}
+
+const hasKeys = (o?: Record<string, string>) => !!o && Object.keys(o).length > 0;
 
 function newCollection(name: string): Collection {
   const rootId = uid("fld");
@@ -315,12 +361,25 @@ export const useStore = create<Store>()(
       revertCollection: (collectionId, versionId) => set((s) => {
         const c = s.collections[collectionId]; if (!c) return s;
         const v = c.versions.find((x) => x.id === versionId); if (!v) return s;
-        return {
-          collections: {
-            ...s.collections,
-            [collectionId]: { ...v.snapshot, versions: c.versions, updatedAt: Date.now() } as Collection,
-          },
-        };
+        const reverted = {
+          ...v.snapshot, versions: c.versions, updatedAt: Date.now(),
+        } as Collection;
+        // Deleting a request closes its tab; a revert that removes one has to
+        // do the same, or the tab keeps editing a request that no longer
+        // exists. Survivors stay open but are marked dirty when the reverted
+        // copy no longer matches what the tab is holding.
+        const tabs = s.tabs
+          .filter((t) =>
+            Object.prototype.hasOwnProperty.call(c.requests, t.requestId)
+              ? Object.prototype.hasOwnProperty.call(reverted.requests, t.requestId)
+              : true
+          )
+          .map((t) => {
+            const r = reverted.requests[t.requestId];
+            if (!r) return t;
+            return { ...t, dirty: JSON.stringify(r) !== JSON.stringify(t.draft) };
+          });
+        return { collections: { ...s.collections, [collectionId]: reverted }, tabs };
       }),
       updateCollectionVariables: (id, vars) => set((s) => {
         const c = s.collections[id]; if (!c) return s;
@@ -423,8 +482,46 @@ export const useStore = create<Store>()(
         tabs: s.tabs.map((t) => t.id === tabId ? { ...t, sending } : t),
       })),
 
+      applyScriptUpdates: (updates, collectionId) => set((s) => {
+        const next: Partial<Store> = {};
+        if (hasKeys(updates.globals)) {
+          next.globals = mergeVars(s.globals, updates.globals!);
+        }
+        if (hasKeys(updates.env) && s.activeEnvId) {
+          const env = s.environments[s.activeEnvId];
+          if (env) {
+            next.environments = {
+              ...s.environments,
+              [s.activeEnvId]: { ...env, variables: mergeVars(env.variables, updates.env!) },
+            };
+          }
+        }
+        if (hasKeys(updates.collection) && collectionId) {
+          const c = s.collections[collectionId];
+          if (c) {
+            next.collections = {
+              ...s.collections,
+              [collectionId]: {
+                ...c,
+                variables: mergeVars(c.variables, updates.collection!),
+                updatedAt: Date.now(),
+              },
+            };
+          }
+        }
+        return next;
+      }),
+
       pushHistory: (entry) => set((s) => ({ history: [entry, ...s.history].slice(0, 200) })),
       clearHistory: () => set({ history: [] }),
+      openFromHistory: (entryId) => {
+        const s = get();
+        const entry = s.history.find((h) => h.id === entryId);
+        if (!entry) return;
+        const loc = s.findRequestLocation(entry.request.id);
+        const live = loc ? s.collections[loc.collectionId]?.requests[entry.request.id] : undefined;
+        s.openDraft(restoreRedacted(entry.request, live));
+      },
 
       createMock: (name) => {
         const id = uid("mock");

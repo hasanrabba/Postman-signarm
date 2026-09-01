@@ -1,10 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { useStore } from "@/lib/store";
+import { useStore, mergeVars } from "@/lib/store";
 import { executeRequest } from "@/lib/executor";
-import type { KeyValue, SignalResponse, SignalRequest, TestResult } from "@/lib/types";
-import { uid } from "@/lib/id";
+import type { SignalResponse, SignalRequest, TestResult } from "@/lib/types";
 
 /**
  * Collection runner: sequentially executes every request in a collection and
@@ -32,12 +31,12 @@ export function Runner({ collectionId, onClose }: { collectionId: string; onClos
     const requests = flatten(col);
     for (const r of requests) {
       const scope = {
-        global: mergeKV(globals, globalOverrides),
-        environment: mergeKV(
+        global: mergeVars(globals, globalOverrides),
+        environment: mergeVars(
           activeEnvId ? environments[activeEnvId]?.variables : undefined,
           envOverrides
         ),
-        collection: mergeKV(col.variables, collectionOverrides),
+        collection: mergeVars(col.variables, collectionOverrides),
       };
       const res = await executeRequest(r, { scope });
       Object.assign(envOverrides, res.envUpdates);
@@ -85,22 +84,6 @@ export function Runner({ collectionId, onClose }: { collectionId: string; onClos
   );
 }
 
-function mergeKV(base: KeyValue[] | undefined, overrides: Record<string, string>): KeyValue[] {
-  const result: KeyValue[] = [];
-  const seen = new Set<string>();
-  for (const kv of base ?? []) {
-    if (Object.prototype.hasOwnProperty.call(overrides, kv.key)) {
-      result.push({ ...kv, value: overrides[kv.key], enabled: true });
-      seen.add(kv.key);
-    } else {
-      result.push(kv);
-    }
-  }
-  for (const [k, v] of Object.entries(overrides)) {
-    if (!seen.has(k)) result.push({ id: uid("ov"), key: k, value: v, enabled: true });
-  }
-  return result;
-}
 
 function flatten(col: ReturnType<typeof useStore.getState>["collections"][string]): SignalRequest[] {
   const out: SignalRequest[] = [];

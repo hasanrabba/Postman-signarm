@@ -115,6 +115,85 @@ function redactBodyString(raw: string): string {
   );
 }
 
+/**
+ * Inverse of `redactRequest`: put real values back into an entry that was
+ * redacted before it was persisted.
+ *
+ * History deliberately stores a redacted copy so credentials never reach
+ * localStorage, which also means an entry cannot be re-sent as-is. When the
+ * request it came from still exists, its current values are matched by key
+ * and restored; anything with no match keeps the [REDACTED] placeholder so
+ * the gap is visible rather than silently empty.
+ */
+export function restoreRedacted(entry: SignalRequest, source?: SignalRequest): SignalRequest {
+  if (!source) return entry;
+
+  const byKey = (list: KeyValue[]) => {
+    const m = new Map<string, string>();
+    for (const kv of list) if (kv.key) m.set(kv.key.toLowerCase(), kv.value);
+    return m;
+  };
+  const restoreList = (list: KeyValue[], srcList: KeyValue[]): KeyValue[] => {
+    const src = byKey(srcList);
+    return list.map((kv) => {
+      if (kv.value !== REDACTED) return kv;
+      const real = src.get(kv.key.toLowerCase());
+      return real === undefined ? kv : { ...kv, value: real };
+    });
+  };
+
+  return {
+    ...entry,
+    headers: restoreList(entry.headers, source.headers),
+    params: restoreList(entry.params, source.params),
+    auth: restoreAuth(entry.auth, source.auth),
+    body: {
+      ...entry.body,
+      raw: restoreBodyString(entry.body.raw ?? "", source.body.raw ?? ""),
+      urlencoded: entry.body.urlencoded && source.body.urlencoded
+        ? restoreList(entry.body.urlencoded, source.body.urlencoded)
+        : entry.body.urlencoded,
+    },
+  };
+}
+
+function restoreAuth(auth: Auth, source: Auth): Auth {
+  if (auth.type !== source.type) return auth;
+  switch (auth.type) {
+    case "basic":
+      return auth.basic?.password === REDACTED
+        ? { ...auth, basic: { username: auth.basic.username, password: source.basic?.password ?? "" } }
+        : auth;
+    case "bearer":
+      return auth.bearer?.token === REDACTED
+        ? { ...auth, bearer: { token: source.bearer?.token ?? "" } }
+        : auth;
+    case "apikey":
+      return auth.apikey?.value === REDACTED
+        ? { ...auth, apikey: { ...auth.apikey, value: source.apikey?.value ?? "" } }
+        : auth;
+    case "oauth2":
+      return auth.oauth2?.accessToken === REDACTED
+        ? { ...auth, oauth2: { ...auth.oauth2, accessToken: source.oauth2?.accessToken ?? "" } }
+        : auth;
+    default:
+      return auth;
+  }
+}
+
+/** Put back the values `redactBodyString` masked, matching on the same keys. */
+function restoreBodyString(raw: string, sourceRaw: string): string {
+  if (!raw.includes(REDACTED) || !sourceRaw) return raw;
+  const KEYS = /"(password|passwd|secret|token|api_?key|access_?key)"\s*:\s*"([^"]*)"/gi;
+  const src = new Map<string, string>();
+  for (const m of sourceRaw.matchAll(KEYS)) src.set(m[1].toLowerCase(), m[2]);
+  return raw.replace(KEYS, (whole, k: string, v: string) => {
+    if (v !== REDACTED) return whole;
+    const real = src.get(k.toLowerCase());
+    return real === undefined ? whole : `"${k}":"${real}"`;
+  });
+}
+
 /** Visual mask for display — replaces the whole value with dots. */
 export function maskValue(value: string): string {
   if (!value) return "";

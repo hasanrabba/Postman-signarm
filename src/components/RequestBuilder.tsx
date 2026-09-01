@@ -16,7 +16,7 @@ type Tab = "params" | "auth" | "headers" | "body" | "pre" | "tests" | "snippets"
 
 export function RequestBuilder({ tab }: { tab: TabState }) {
   const {
-    updateDraft, setTabSending, setTabResponse, pushHistory,
+    updateDraft, setTabSending, setTabResponse, pushHistory, applyScriptUpdates,
     globals, environments, activeEnvId, collections, collectionOrder,
     saveTabInPlace, saveDraft, findRequestLocation, createCollection,
   } = useStore();
@@ -85,7 +85,31 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
         collection: collection?.variables,
       };
       const result = await executeRequest(draft, { scope });
-      setTabResponse(tab.id, result.response, result.tests, result.logs);
+      // Persist what the scripts wrote. Without this, sg.env.set() appears to
+      // work and then silently vanishes on a single send, even though the
+      // collection runner honours the same updates.
+      const logs = [...result.logs];
+      const envWrites = Object.keys(result.envUpdates).length;
+      if (envWrites > 0 && !activeEnvId) {
+        logs.push(
+          `[warn] a script set ${envWrites} environment variable(s) but no environment is active — nothing was saved.`
+        );
+      }
+      const colWrites = Object.keys(result.collectionUpdates).length;
+      if (colWrites > 0 && !collection) {
+        logs.push(
+          `[warn] a script set ${colWrites} collection variable(s) but this request is not saved to a collection — nothing was saved.`
+        );
+      }
+      applyScriptUpdates(
+        {
+          env: result.envUpdates,
+          globals: result.globalUpdates,
+          collection: result.collectionUpdates,
+        },
+        collection?.id
+      );
+      setTabResponse(tab.id, result.response, result.tests, logs);
       // Redact before persisting to history: the raw Authorization
       // header, Bearer tokens, Cookie, X-Api-Key, oauth tokens etc. get
       // replaced with [REDACTED]. The original request still lives on
