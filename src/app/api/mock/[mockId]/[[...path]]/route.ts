@@ -43,5 +43,10 @@ async function handle(req: NextRequest, ctx: Ctx) {
   if (match.delayMs && match.delayMs > 0) {
     await new Promise((r) => setTimeout(r, match.delayMs));
   }
-  return new NextResponse(match.body, { status: match.status, headers: match.headers });
+  // Defensive: a route registered before validation existed could still
+  // carry a bad status, and NextResponse throws on one.
+  const status = Number.isInteger(match.status) && match.status >= 200 && match.status <= 599
+    ? match.status
+    : 200;
+  return new NextResponse(match.body, { status, headers: match.headers });
 }

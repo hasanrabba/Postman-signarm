@@ -45,6 +45,10 @@ interface Store {
 
   commandPaletteOpen: boolean;
   setCommandPaletteOpen: (open: boolean) => void;
+  /** Collection currently open in the runner, if any. Not persisted. */
+  runnerCollectionId?: string;
+  openRunner: (collectionId: string) => void;
+  closeRunner: () => void;
 
   // collection ops
   createCollection: (name: string) => string;
@@ -156,6 +160,25 @@ export function mergeVars(
 
 const hasKeys = (o?: Record<string, string>) => !!o && Object.keys(o).length > 0;
 
+/** Snapshots older than this are dropped; each one holds a full copy of the
+ *  collection, and localStorage is a few megabytes. */
+const MAX_VERSIONS = 50;
+
+/**
+ * Close the tabs `keep` rejects and make sure `activeTabId` still names a tab
+ * that exists — a dangling id renders the empty state while tabs are visibly
+ * open in the tab bar.
+ */
+function reconcileTabs(
+  tabs: TabState[],
+  keep: (t: TabState) => boolean,
+  activeTabId: string | undefined
+): { tabs: TabState[]; activeTabId: string | undefined } {
+  const next = tabs.filter(keep);
+  const stillOpen = next.some((t) => t.id === activeTabId);
+  return { tabs: next, activeTabId: stillOpen ? activeTabId : next[next.length - 1]?.id };
+}
+
 /**
  * The vault passphrase is held here rather than in store state: state is what
  * the persist middleware serialises, and the passphrase must never be written
@@ -206,8 +229,11 @@ export const useStore = create<Store>()(
       activeTabId: undefined,
       activeEnvId: undefined,
       commandPaletteOpen: false,
+      runnerCollectionId: undefined,
 
       setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
+      openRunner: (collectionId) => set({ runnerCollectionId: collectionId }),
+      closeRunner: () => set({ runnerCollectionId: undefined }),
 
       createCollection: (name) => {
         const c = newCollection(name);
@@ -222,8 +248,14 @@ export const useStore = create<Store>()(
         return { collections: { ...s.collections, [id]: { ...c, name, updatedAt: Date.now() } } };
       }),
       deleteCollection: (id) => set((s) => {
-        const { [id]: _drop, ...rest } = s.collections;
-        return { collections: rest, collectionOrder: s.collectionOrder.filter((x) => x !== id) };
+        const { [id]: doomed, ...rest } = s.collections;
+        const gone = new Set(Object.keys(doomed?.requests ?? {}));
+        return {
+          collections: rest,
+          collectionOrder: s.collectionOrder.filter((x) => x !== id),
+          runnerCollectionId: s.runnerCollectionId === id ? undefined : s.runnerCollectionId,
+          ...reconcileTabs(s.tabs, (t) => !gone.has(t.requestId), s.activeTabId),
+        };
       }),
       addFolder: (collectionId, parentFolderId, name) => {
         const fid = uid("fld");
@@ -300,7 +332,7 @@ export const useStore = create<Store>()(
               updatedAt: Date.now(),
             },
           },
-          tabs: s.tabs.filter((t) => !doomedRequests.has(t.requestId)),
+          ...reconcileTabs(s.tabs, (t) => !doomedRequests.has(t.requestId), s.activeTabId),
         };
       }),
       addRequest: (collectionId, folderId, template) => {
@@ -377,7 +409,7 @@ export const useStore = create<Store>()(
             ...s.collections,
             [collectionId]: { ...c, requests: reqs, folders, updatedAt: Date.now() },
           },
-          tabs: s.tabs.filter((t) => t.requestId !== requestId),
+          ...reconcileTabs(s.tabs, (t) => t.requestId !== requestId, s.activeTabId),
         };
       }),
       commitCollectionVersion: (collectionId, message) => set((s) => {
@@ -390,7 +422,10 @@ export const useStore = create<Store>()(
           snapshot,
         };
         return {
-          collections: { ...s.collections, [collectionId]: { ...c, versions: [v, ...versions] } },
+          collections: {
+            ...s.collections,
+            [collectionId]: { ...c, versions: [v, ...versions].slice(0, MAX_VERSIONS) },
+          },
         };
       }),
       revertCollection: (collectionId, versionId) => set((s) => {
@@ -403,18 +438,23 @@ export const useStore = create<Store>()(
         // do the same, or the tab keeps editing a request that no longer
         // exists. Survivors stay open but are marked dirty when the reverted
         // copy no longer matches what the tab is holding.
-        const tabs = s.tabs
-          .filter((t) =>
+        const reconciled = reconcileTabs(
+          s.tabs,
+          (t) =>
             Object.prototype.hasOwnProperty.call(c.requests, t.requestId)
               ? Object.prototype.hasOwnProperty.call(reverted.requests, t.requestId)
-              : true
-          )
-          .map((t) => {
+              : true,
+          s.activeTabId
+        );
+        return {
+          collections: { ...s.collections, [collectionId]: reverted },
+          activeTabId: reconciled.activeTabId,
+          tabs: reconciled.tabs.map((t) => {
             const r = reverted.requests[t.requestId];
             if (!r) return t;
             return { ...t, dirty: JSON.stringify(r) !== JSON.stringify(t.draft) };
-          });
-        return { collections: { ...s.collections, [collectionId]: reverted }, tabs };
+          }),
+        };
       }),
       updateCollectionVariables: (id, vars) => set((s) => {
         const c = s.collections[id]; if (!c) return s;

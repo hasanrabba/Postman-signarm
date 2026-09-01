@@ -143,7 +143,11 @@ fn launch() -> Result<i32, Box<dyn Error>> {
 
 fn main() -> ExitCode {
     match launch() {
-        Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
+        // A Windows crash code such as 0xC0000005 arrives here as a large or
+        // negative i32; clamping it into a u8 would report the crash as
+        // success. Anything non-zero that doesn't fit becomes 1.
+        Ok(0) => ExitCode::SUCCESS,
+        Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1).max(1)),
         Err(e) => {
             #[cfg(windows)]
             {

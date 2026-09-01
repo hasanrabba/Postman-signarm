@@ -17,7 +17,9 @@ type IconName =
   | "chevronRight"
   | "chevronDown"
   | "gitBranch"
-  | "more";
+  | "more"
+  | "play"
+  | "sliders";
 
 const PATHS: Record<IconName, string> = {
   pencil:
@@ -34,6 +36,9 @@ const PATHS: Record<IconName, string> = {
   chevronDown: "M6 9l6 6 6-6",
   gitBranch:
     "M6 3v12 M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M15 6a9 9 0 0 0-9 9",
+  play: "M7 4l12 8-12 8z",
+  sliders:
+    "M4 6h10 M18 6h2 M4 12h2 M10 12h10 M4 18h10 M18 18h2 M16 4v4 M8 10v4 M16 16v4",
   more: "M12 12h.01 M19 12h.01 M5 12h.01",
 };
 

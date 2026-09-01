@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "@/lib/store";
 import type { Collection, Folder, Method, MockRoute, MockServer, SignalRequest } from "@/lib/types";
 import { uid } from "@/lib/id";
@@ -15,7 +15,7 @@ export function Sidebar() {
   const [search, setSearch] = useState("");
 
   return (
-    <aside className="w-80 shrink-0 border-r border-signal-border bg-signal-panel flex flex-col">
+    <aside aria-label="Workspace" className="w-80 shrink-0 border-r border-signal-border bg-signal-panel flex flex-col">
       <div className="p-3 border-b border-signal-border flex items-center gap-2">
         <div className="font-bold text-white tracking-wider">
           <span className="text-signal-accent">signarm</span> signal
@@ -94,10 +94,16 @@ function CollectionTree({
   onAddRequest: (folderId: string) => void;
   onOpen: (requestId: string) => void;
 }) {
-  const { commitCollectionVersion, addFolder, renameCollection, deleteCollection } = useStore();
+  const {
+    commitCollectionVersion, addFolder, renameCollection, deleteCollection,
+    revertCollection, updateCollectionVariables, openRunner,
+  } = useStore();
   const [open, setOpen] = useState(true);
+  const [panel, setPanel] = useState<"none" | "vars" | "versions">("none");
   const nameRef = useRef<EditableNameHandle | null>(null);
   const root = collection.folders[collection.rootFolderId];
+  const togglePanel = (p: "vars" | "versions") =>
+    setPanel((cur) => (cur === p ? "none" : p));
 
   const matches = (r: SignalRequest) =>
     !search || r.name.toLowerCase().includes(search.toLowerCase()) || r.url.toLowerCase().includes(search.toLowerCase());
@@ -145,9 +151,23 @@ function CollectionTree({
           <Icon name="folderPlus" />
         </IconButton>
         <IconButton
-          label="Commit version"
-          title="Commit version"
-          onClick={() => commitCollectionVersion(collection.id, new Date().toISOString())}
+          label={`Run collection ${collection.name}`}
+          title="Run collection"
+          onClick={() => openRunner(collection.id)}
+        >
+          <Icon name="play" size={12} />
+        </IconButton>
+        <IconButton
+          label={`Collection variables for ${collection.name}`}
+          title="Collection variables"
+          onClick={() => togglePanel("vars")}
+        >
+          <Icon name="sliders" />
+        </IconButton>
+        <IconButton
+          label={`Version history for ${collection.name}`}
+          title={`Version history (${collection.versions.length})`}
+          onClick={() => togglePanel("versions")}
         >
           <Icon name="gitBranch" />
         </IconButton>
@@ -160,6 +180,51 @@ function CollectionTree({
           <Icon name="trash" />
         </IconButton>
       </div>
+      {panel === "vars" && (
+        <div className="border-t border-signal-border">
+          <div className="px-2 py-1 text-[11px] text-signal-muted">
+            Collection variables — available as <code>{"{{name}}"}</code> in every request here.
+          </div>
+          <MiniVars
+            vars={collection.variables}
+            onChange={(vars) => updateCollectionVariables(collection.id, vars)}
+          />
+        </div>
+      )}
+      {panel === "versions" && (
+        <div className="border-t border-signal-border p-2 space-y-1">
+          <button
+            className="btn w-full"
+            onClick={() => {
+              const message = prompt("Version message", new Date().toLocaleString());
+              if (message !== null) commitCollectionVersion(collection.id, message || new Date().toISOString());
+            }}
+          >Commit current state</button>
+          {collection.versions.length === 0 && (
+            <div className="text-[11px] text-signal-muted">
+              No versions yet. Commit one to snapshot this collection.
+            </div>
+          )}
+          {collection.versions.map((v) => (
+            <div key={v.id} className="flex items-center gap-1 text-[11px] border border-signal-border rounded px-2 py-1">
+              <span className="flex-1 truncate" title={v.message}>{v.message}</span>
+              <span className="text-signal-muted">{new Date(v.timestamp).toLocaleTimeString()}</span>
+              <button
+                className="btn !py-0 !text-[10px]"
+                onClick={async () => {
+                  const ok = await confirmDialog({
+                    title: "Revert collection",
+                    message: `Replace "${collection.name}" with the snapshot from ${new Date(v.timestamp).toLocaleString()}?\n\nRequests added since then will be removed.`,
+                    confirmLabel: "Revert",
+                    destructive: true,
+                  });
+                  if (ok) revertCollection(collection.id, v.id);
+                }}
+              >Revert</button>
+            </div>
+          ))}
+        </div>
+      )}
       {open && (
         <FolderNode
           collection={collection}
@@ -377,7 +442,16 @@ function EnvironmentsPanel() {
             >{editing === e.id ? "close" : "edit"}</button>
             <button
               className="text-xs text-signal-muted hover:text-signal-err"
-              onClick={() => deleteEnvironment(e.id)}
+              aria-label={`Delete environment ${e.name}`}
+              onClick={async () => {
+                const ok = await confirmDialog({
+                  title: "Delete environment",
+                  message: `Delete "${e.name}" and its ${e.variables.length} variable(s)?\n\nThis cannot be undone.`,
+                  confirmLabel: "Delete",
+                  destructive: true,
+                });
+                if (ok) deleteEnvironment(e.id);
+              }}
             >×</button>
           </div>
           {editing === e.id && (
@@ -398,9 +472,16 @@ function EnvironmentsPanel() {
 type MiniVar = { id: string; key: string; value: string; enabled: boolean };
 function MiniVars({ vars, onChange }: { vars: MiniVar[]; onChange: (v: MiniVar[]) => void }) {
   const list: MiniVar[] = [...vars, { id: "__new", key: "", value: "", enabled: true }];
-  const update = (id: string, patch: Partial<MiniVar>) => {
+  // The trailing row is a placeholder. Promoting it on the first keystroke
+  // must carry the caret across to the real row, otherwise focus stays in the
+  // re-blanked placeholder and typing "baseUrl" yields seven variables.
+  const [handoff, setHandoff] = useState<{ id: string; field: "key" | "value" } | null>(null);
+
+  const update = (id: string, patch: Partial<MiniVar>, field?: "key" | "value") => {
     if (id === "__new") {
-      onChange([...vars, { id: uid("kv"), key: "", value: "", enabled: true, ...patch }]);
+      const created = { id: uid("kv"), key: "", value: "", enabled: true, ...patch };
+      onChange([...vars, created]);
+      if (field) setHandoff({ id: created.id, field });
       return;
     }
     onChange(vars.map((v) => (v.id === id ? { ...v, ...patch } : v)));
@@ -411,12 +492,52 @@ function MiniVars({ vars, onChange }: { vars: MiniVar[]; onChange: (v: MiniVar[]
       {list.map((v) => (
         <div key={v.id} className="grid grid-cols-[20px_1fr_1fr_20px] gap-1">
           <input type="checkbox" checked={v.enabled} onChange={(e) => update(v.id, { enabled: e.target.checked })} />
-          <input className="input" placeholder="key" value={v.key} onChange={(e) => update(v.id, { key: e.target.value })} />
-          <input className="input" placeholder="value" value={v.value} onChange={(e) => update(v.id, { value: e.target.value })} />
-          {v.id !== "__new" ? <button className="text-signal-muted hover:text-signal-err" onClick={() => remove(v.id)}>×</button> : <span />}
+          <MiniInput
+            placeholder="key"
+            value={v.key}
+            autoFocus={handoff?.id === v.id && handoff.field === "key"}
+            onFocused={() => setHandoff(null)}
+            onChange={(next) => update(v.id, { key: next }, "key")}
+          />
+          <MiniInput
+            placeholder="value"
+            value={v.value}
+            autoFocus={handoff?.id === v.id && handoff.field === "value"}
+            onFocused={() => setHandoff(null)}
+            onChange={(next) => update(v.id, { value: next }, "value")}
+          />
+          {v.id !== "__new" ? <button className="text-signal-muted hover:text-signal-err" aria-label={`Remove ${v.key || "variable"}`} onClick={() => remove(v.id)}>×</button> : <span />}
         </div>
       ))}
     </div>
+  );
+}
+
+function MiniInput({
+  placeholder, value, onChange, autoFocus, onFocused,
+}: {
+  placeholder: string;
+  value: string;
+  onChange: (next: string) => void;
+  autoFocus: boolean;
+  onFocused: () => void;
+}) {
+  const ref = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (!autoFocus || !ref.current) return;
+    ref.current.focus();
+    const end = ref.current.value.length;
+    ref.current.setSelectionRange(end, end);
+    onFocused();
+  }, [autoFocus, onFocused]);
+  return (
+    <input
+      ref={ref}
+      className="input"
+      placeholder={placeholder}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    />
   );
 }
 
@@ -509,7 +630,19 @@ function MockServerEditor({
           {expanded ? "▾" : "▸"}
         </button>
         <input className="input flex-1" value={server.name} onChange={(e) => onRename(e.target.value)} />
-        <button className="text-xs text-signal-muted hover:text-signal-err" onClick={onDelete}>×</button>
+        <button
+          className="text-xs text-signal-muted hover:text-signal-err"
+          aria-label={`Delete mock server ${server.name}`}
+          onClick={async () => {
+            const ok = await confirmDialog({
+              title: "Delete mock server",
+              message: `Delete "${server.name}" and its ${server.routes.length} route(s)?\n\nThis cannot be undone.`,
+              confirmLabel: "Delete",
+              destructive: true,
+            });
+            if (ok) onDelete();
+          }}
+        >×</button>
       </div>
       <div className="text-[10px] text-signal-muted break-all">
         <code>/api/mock/{server.id}/&lt;path&gt;</code>
@@ -542,8 +675,15 @@ function MockServerEditor({
                   className="input !w-16"
                   type="number"
                   value={r.status}
+                  min={200}
+                  max={599}
+                  aria-label="Response status"
                   onChange={(e) => {
-                    const copy = [...server.routes]; copy[idx] = { ...r, status: Number(e.target.value) };
+                    // An empty field yields NaN, which serialises to null and
+                    // makes every request to this route fail at send time.
+                    const n = Number.parseInt(e.target.value, 10);
+                    const status = Number.isNaN(n) ? 200 : Math.min(599, Math.max(200, n));
+                    const copy = [...server.routes]; copy[idx] = { ...r, status };
                     onRoutesChange(copy);
                   }}
                 />

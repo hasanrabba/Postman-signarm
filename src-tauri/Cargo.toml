@@ -26,6 +26,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-uti
 base64 = "0.22"
 url = "2"
 parking_lot = "0.12"
+futures-util = { version = "0.3", default-features = false }
 
 [features]
 # Tauri uses this feature to decide whether to serve the bundled frontend

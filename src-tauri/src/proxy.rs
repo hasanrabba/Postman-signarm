@@ -59,6 +59,9 @@ fn err(status_text: &str, error: String, elapsed: u128) -> ProxyResponse {
 // or a 64k-header request.
 const MAX_URL_LEN: usize = 4 * 1024;                // 4 KB
 const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;      // 16 MB
+/// Largest response we will buffer. The body is read whole in order to
+/// base64/decode it, so an uncapped download exhausts the app's heap.
+const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;  // 32 MB
 const MAX_HEADERS: usize = 256;
 const MAX_HEADER_VALUE_LEN: usize = 8 * 1024;        // 8 KB
 const MIN_TIMEOUT_MS: u64 = 1_000;
@@ -380,15 +383,48 @@ pub async fn proxy_fetch(payload: ProxyPayload) -> Result<ProxyResponse, String>
         out_headers.insert(name, val);
     }
 
-    let bytes = match res.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
+    // Refuse an oversized body before reading it when the server declares
+    // one, and stop mid-stream when it doesn't (or lies).
+    if let Some(len) = res.content_length() {
+        if len > MAX_RESPONSE_BYTES as u64 {
             return Ok(err(
-                "Error",
-                format!("body read: {e}"),
+                "Payload Too Large",
+                format!("Response too large ({len} bytes > {MAX_RESPONSE_BYTES} limit)"),
                 started.elapsed().as_millis(),
             ));
         }
+    }
+    let bytes = {
+        use futures_util::StreamExt;
+        let mut buf: Vec<u8> = Vec::new();
+        let mut stream = res.bytes_stream();
+        let mut overflow = false;
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(c) => {
+                    if buf.len() + c.len() > MAX_RESPONSE_BYTES {
+                        overflow = true;
+                        break;
+                    }
+                    buf.extend_from_slice(&c);
+                }
+                Err(e) => {
+                    return Ok(err(
+                        "Error",
+                        format!("body read: {e}"),
+                        started.elapsed().as_millis(),
+                    ));
+                }
+            }
+        }
+        if overflow {
+            return Ok(err(
+                "Payload Too Large",
+                format!("Response exceeded the {MAX_RESPONSE_BYTES} byte limit"),
+                started.elapsed().as_millis(),
+            ));
+        }
+        buf
     };
     let size = bytes.len();
     let (body, body_is_base64) = if is_text_content_type(&content_type) {
@@ -456,8 +492,13 @@ mod tests {
         assert!(filtered.len() <= MAX_HEADERS);
     }
 
+    // `should_block` reads a process-wide env var, and cargo runs tests in
+    // parallel threads — without this lock the two env tests race.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn ssrf_blocks_default() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("SIGNAL_ALLOW_LOCAL");
         assert!(should_block("localhost"));
         assert!(should_block("127.0.0.1"));
@@ -470,6 +511,7 @@ mod tests {
 
     #[test]
     fn ssrf_opt_in_unblocks() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("SIGNAL_ALLOW_LOCAL", "1");
         assert!(!should_block("localhost"));
         assert!(!should_block("127.0.0.1"));

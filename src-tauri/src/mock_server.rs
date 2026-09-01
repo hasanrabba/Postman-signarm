@@ -24,6 +24,12 @@ pub struct MockRoute {
     pub delay_ms: Option<u64>,
 }
 
+/// The listener is on loopback, but any page in the user's browser can post
+/// to it. Nothing a caller sends may decide how much we allocate.
+const MAX_REQUEST_BODY: usize = 8 * 1024 * 1024; // 8 MB
+const MAX_HEADER_LINES: usize = 100;
+const MAX_HEADER_LINE: usize = 8 * 1024;
+
 #[derive(Default)]
 pub struct MockState {
     pub routes: RwLock<HashMap<String, Vec<MockRoute>>>,
@@ -95,9 +101,13 @@ async fn handle(mut socket: TcpStream, state: Arc<MockState>) -> std::io::Result
     let target = parts.next().unwrap_or("/").to_string();
 
     let mut content_length = 0usize;
+    let mut seen = 0usize;
     loop {
+        if seen >= MAX_HEADER_LINES { break; }
+        seen += 1;
         let mut line = String::new();
-        let n = reader.read_line(&mut line).await?;
+        // Bound each line too, so one endless header can't grow without limit.
+        let n = (&mut reader).take(MAX_HEADER_LINE as u64).read_line(&mut line).await?;
         if n == 0 { break; }
         if line == "\r\n" || line == "\n" { break; }
         if let Some(v) = line.strip_prefix_ignore_ascii_case("content-length:") {
@@ -105,8 +115,11 @@ async fn handle(mut socket: TcpStream, state: Arc<MockState>) -> std::io::Result
         }
     }
     if content_length > 0 {
-        let mut buf = vec![0u8; content_length];
-        reader.read_exact(&mut buf).await?;
+        // Drain, never allocate to a caller-supplied length: `Content-Length:
+        // 99999999999` would otherwise ask for 100 GB up front.
+        let to_read = content_length.min(MAX_REQUEST_BODY) as u64;
+        let mut sink = tokio::io::sink();
+        let _ = tokio::io::copy(&mut (&mut reader).take(to_read), &mut sink).await;
     }
 
     let (mock_id, mock_path) = split_target(&target);

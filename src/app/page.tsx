@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { Tabs } from "@/components/Tabs";
 import { RequestBuilder } from "@/components/RequestBuilder";
@@ -20,9 +20,8 @@ export default function Home() {
     () => useStore.persist.hasHydrated(),
     () => false
   );
-  const { tabs, activeTabId, openDraft, collectionOrder } = useStore();
+  const { tabs, activeTabId, openDraft, runnerCollectionId, closeRunner } = useStore();
   const active = tabs.find((t) => t.id === activeTabId);
-  const [runner, setRunner] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     void useStore.persist.rehydrate();
@@ -62,19 +61,12 @@ export default function Home() {
             No tab open. Press <span className="kbd mx-1">⌘K</span> or click + to start.
           </div>
         )}
-        {collectionOrder.length > 0 && (
-          <div className="absolute bottom-2 right-2 flex gap-2">
-            <button
-              className="btn"
-              onClick={() => setRunner(collectionOrder[0])}
-              title="Run collection"
-            >▶ Run first collection</button>
-          </div>
-        )}
       </main>
       <CommandPalette />
       <ConfirmDialogHost />
-      {runner && <Runner collectionId={runner} onClose={() => setRunner(undefined)} />}
+      {runnerCollectionId && (
+        <Runner collectionId={runnerCollectionId} onClose={closeRunner} />
+      )}
     </div>
   );
 }

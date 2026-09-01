@@ -5,6 +5,21 @@ import { autoFlagSecretsOnRequest } from "./secrets";
 
 const METHODS: Method[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 
+/** Split on the FIRST separator only — `sig=abc=def` is one pair, not two. */
+function splitOnce(s: string, sep: string): [string, string] {
+  const i = s.indexOf(sep);
+  return i < 0 ? [s, ""] : [s.slice(0, i), s.slice(i + 1)];
+}
+
+/**
+ * decodeURIComponent throws on malformed escapes (`%zz`), which would abort
+ * the whole import. A value we cannot decode is far more useful passed
+ * through verbatim than as an exception.
+ */
+function safeDecode(s: string): string {
+  try { return decodeURIComponent(s); } catch { return s; }
+}
+
 /** Shell-style tokenizer that understands single/double quotes, escapes, and line continuations. */
 function tokenize(cmd: string): string[] {
   const s = cmd.replace(/\\\r?\n/g, " ").trim();
@@ -200,9 +215,13 @@ export function parseCurl(cmd: string): SignalRequest | null {
   }
 
   if (basicUser) {
+    // `curl -u alice` prompts for a password and sends `alice:`; without the
+    // colon the header decodes to a username with no separator, which every
+    // server rejects.
+    const pair = basicUser.includes(":") ? basicUser : `${basicUser}:`;
     const token = typeof btoa !== "undefined"
-      ? btoa(basicUser)
-      : Buffer.from(basicUser, "utf8").toString("base64");
+      ? btoa(pair)
+      : Buffer.from(pair, "utf8").toString("base64");
     headers.push({ id: uid("h"), key: "Authorization", value: `Basic ${token}`, enabled: true });
   }
 
@@ -222,11 +241,11 @@ export function parseCurl(cmd: string): SignalRequest | null {
     url = base;
     for (const pair of q.split("&")) {
       if (!pair) continue;
-      const [k, v = ""] = pair.split("=");
+      const [k, v] = splitOnce(pair, "=");
       params.push({
         id: uid("p"),
-        key: decodeURIComponent(k),
-        value: decodeURIComponent(v),
+        key: safeDecode(k),
+        value: safeDecode(v),
         enabled: true,
       });
     }
@@ -234,11 +253,11 @@ export function parseCurl(cmd: string): SignalRequest | null {
 
   const urlencoded: KeyValue[] = bodyMode === "form-urlencoded"
     ? bodyRaw.split("&").filter(Boolean).map((p) => {
-        const [k, v = ""] = p.split("=");
+        const [k, v] = splitOnce(p, "=");
         return {
           id: uid("u"),
-          key: decodeURIComponent(k),
-          value: decodeURIComponent(v),
+          key: safeDecode(k),
+          value: safeDecode(v),
           enabled: true,
         };
       })
@@ -278,34 +297,39 @@ export function toCurl(req: SignalRequest): string {
     .map((p) => `${encodeURIComponent(p.key)}=${encodeURIComponent(p.value)}`)
     .join("&");
   const url = q ? `${req.url}${req.url.includes("?") ? "&" : "?"}${q}` : req.url;
-  parts.push(`'${url}'`);
+  parts.push(`'${shellQuote(url)}'`);
   for (const h of req.headers) {
     if (!h.enabled || !h.key) continue;
-    parts.push(`-H '${h.key}: ${h.value.replace(/'/g, "'\\''")}'`);
+    parts.push(`-H '${h.key}: ${shellQuote(h.value)}'`);
   }
   const b = req.body;
   if (b.mode === "json" || b.mode === "text" || b.mode === "xml") {
-    if (b.raw) parts.push(`--data-raw '${b.raw.replace(/'/g, "'\\''")}'`);
+    if (b.raw) parts.push(`--data-raw '${shellQuote(b.raw)}'`);
   } else if (b.mode === "form-urlencoded" && b.urlencoded) {
     for (const kv of b.urlencoded) {
       if (kv.enabled && kv.key) {
-        parts.push(`--data-urlencode '${kv.key}=${kv.value.replace(/'/g, "'\\''")}'`);
+        parts.push(`--data-urlencode '${kv.key}=${shellQuote(kv.value)}'`);
       }
     }
   } else if (b.mode === "form-data" && b.formdata) {
     for (const kv of b.formdata) {
       if (!kv.enabled || !kv.key) continue;
       if (kv.type === "file") parts.push(`-F '${kv.key}=@${kv.fileName ?? ""}'`);
-      else parts.push(`-F '${kv.key}=${kv.value.replace(/'/g, "'\\''")}'`);
+      else parts.push(`-F '${kv.key}=${shellQuote(kv.value)}'`);
     }
   } else if (b.mode === "graphql" && b.graphql) {
     const payload = JSON.stringify({
       query: b.graphql.query,
       variables: safeJSON(b.graphql.variables),
     });
-    parts.push(`--data-raw '${payload.replace(/'/g, "'\\''")}'`);
+    parts.push(`--data-raw '${shellQuote(payload)}'`);
   }
   return parts.join(" \\\n  ");
+}
+
+/** Escape a value for single-quoted shell context. */
+function shellQuote(v: string): string {
+  return v.replace(/'/g, "'\\''");
 }
 
 function safeJSON(src: string) {

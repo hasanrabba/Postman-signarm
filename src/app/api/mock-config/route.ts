@@ -25,6 +25,23 @@ export async function POST(req: NextRequest) {
   if (body.mockId === "__proto__" || body.mockId === "constructor" || body.mockId === "prototype") {
     return NextResponse.json({ ok: false, error: "Reserved mockId" }, { status: 400 });
   }
+  // A route whose status isn't a legal HTTP code makes every later request
+  // to it throw at response-construction time. Reject it here, where the
+  // caller can see why, instead of 500ing on each hit.
+  const bad = body.routes.findIndex(
+    (r) => !Number.isInteger(r?.status) || r.status < 200 || r.status > 599
+  );
+  if (bad !== -1) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: `Route ${bad + 1} (${body.routes[bad]?.method ?? "?"} ${body.routes[bad]?.path ?? "?"}) has status ${
+          body.routes[bad]?.status ?? "empty"
+        }; expected an integer between 200 and 599.`,
+      },
+      { status: 400 }
+    );
+  }
   mocks[body.mockId] = body.routes;
   return NextResponse.json({ ok: true, count: body.routes.length });
 }

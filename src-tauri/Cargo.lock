@@ -3258,6 +3258,7 @@ name = "signarm-signal"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "futures-util",
  "parking_lot",
  "reqwest 0.12.28",
  "serde",

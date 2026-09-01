@@ -14,6 +14,10 @@ interface ProxyPayload {
 }
 
 const MAX_REDIRECTS = 10;
+/** Largest response we will buffer. The whole body is read into memory to
+ *  base64/decode it, so without a ceiling one huge download exhausts the
+ *  server's heap. */
+const MAX_RESPONSE_BYTES = 32 * 1024 * 1024; // 32 MB
 
 /** Set SIGNAL_PROXY_ALLOW_LOCAL=1 to reach localhost/private ranges. */
 function allowLocal(): boolean {
@@ -110,6 +114,32 @@ function blocked(error: string, elapsedMs = 0, statusText = "Blocked") {
   });
 }
 
+/**
+ * Read a response body, giving up once it passes `limit`. A missing or lying
+ * content-length must not be able to push us past the ceiling, so this
+ * streams and counts rather than trusting the header.
+ */
+async function readCapped(res: Response, limit: number): Promise<Uint8Array | null> {
+  if (!res.body) return new Uint8Array(await res.arrayBuffer());
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) { out.set(c, at); at += c.byteLength; }
+  return out;
+}
+
 export async function POST(req: NextRequest) {
   const started = Date.now();
   let payload: ProxyPayload;
@@ -185,7 +215,22 @@ export async function POST(req: NextRequest) {
 
     if (!res) return blocked("No response from upstream.", Date.now() - started, "Error");
 
-    const buf = await res.arrayBuffer();
+    const declared = Number(res.headers.get("content-length") ?? NaN);
+    if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+      return blocked(
+        `Response too large (${declared} bytes > ${MAX_RESPONSE_BYTES} limit).`,
+        Date.now() - started,
+        "Payload Too Large"
+      );
+    }
+    const buf = await readCapped(res, MAX_RESPONSE_BYTES);
+    if (!buf) {
+      return blocked(
+        `Response exceeded the ${MAX_RESPONSE_BYTES} byte limit.`,
+        Date.now() - started,
+        "Payload Too Large"
+      );
+    }
     const ct = res.headers.get("content-type") || "";
     const isText = /^(text\/|application\/(json|xml|javascript|x-www-form-urlencoded|graphql|ld\+json|problem\+json|vnd\.api\+json))/i.test(ct) || !ct;
     let respBody = "";

@@ -12,7 +12,7 @@ type Command = {
 
 export function CommandPalette() {
   const store = useStore();
-  const { commandPaletteOpen, setCommandPaletteOpen } = store;
+  const { commandPaletteOpen, setCommandPaletteOpen, openDraft } = store;
   const [query, setQuery] = useState("");
 
   useEffect(() => {
@@ -22,11 +22,18 @@ export function CommandPalette() {
         e.preventDefault();
         setCommandPaletteOpen(!commandPaletteOpen);
       }
+      // The palette advertises ⌘N for a new request; bind it here so the
+      // hint is true. Shift+⌘N is the browser's new-window shortcut.
+      if ((isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        openDraft();
+        setCommandPaletteOpen(false);
+      }
       if (e.key === "Escape") setCommandPaletteOpen(false);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [commandPaletteOpen, setCommandPaletteOpen]);
+  }, [commandPaletteOpen, setCommandPaletteOpen, openDraft]);
 
   const commands = useMemo<Command[]>(() => {
     const cmds: Command[] = [

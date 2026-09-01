@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { KeyValue } from "@/lib/types";
 import { uid } from "@/lib/id";
 import { isSecretHeaderName, isSecretParamName, maskValue } from "@/lib/secrets";
@@ -21,10 +21,20 @@ export function KVEditor({
   showDescription, secretDetect = "none",
 }: Props) {
   const visible = [...rows, { id: "__new", key: "", value: "", enabled: true } as KeyValue];
+  // The trailing blank row is a placeholder, not a real row. The first
+  // keystroke in it promotes it to a real row — and focus has to follow, or
+  // the caret stays in the (now re-blanked) placeholder and every further
+  // keystroke creates another row: typing "X-Trace" produced seven headers.
+  const [handoff, setHandoff] = useState<{ id: string; field: keyof KeyValue } | null>(null);
 
   const update = (id: string, patch: Partial<KeyValue>) => {
     if (id === "__new") {
-      onChange([...rows, { id: uid("kv"), key: "", value: "", enabled: true, ...patch }]);
+      const created = { id: uid("kv"), key: "", value: "", enabled: true, ...patch };
+      onChange([...rows, created]);
+      const field = Object.keys(patch)[0] as keyof KeyValue;
+      if (field === "key" || field === "value" || field === "description") {
+        setHandoff({ id: created.id, field });
+      }
       return;
     }
     onChange(rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -58,6 +68,8 @@ export function KVEditor({
             showDescription={showDescription}
             onUpdate={update}
             onRemove={remove}
+            focusField={handoff?.id === r.id ? handoff.field : undefined}
+            onFocusHandled={() => setHandoff(null)}
           />
         );
       })}
@@ -67,6 +79,7 @@ export function KVEditor({
 
 function KVRow({
   row, placeholderKey, placeholderValue, isSecret, showDescription, onUpdate, onRemove,
+  focusField, onFocusHandled,
 }: {
   row: KeyValue;
   placeholderKey: string;
@@ -75,9 +88,28 @@ function KVRow({
   showDescription?: boolean;
   onUpdate: (id: string, patch: Partial<KeyValue>) => void;
   onRemove: (id: string) => void;
+  focusField?: keyof KeyValue;
+  onFocusHandled?: () => void;
 }) {
   const [revealed, setRevealed] = useState(false);
   const isNew = row.id === "__new";
+  const keyRef = useRef<HTMLInputElement | null>(null);
+  const valueRef = useRef<HTMLInputElement | null>(null);
+  const descRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!focusField) return;
+    const el =
+      focusField === "key" ? keyRef.current
+      : focusField === "value" ? valueRef.current
+      : descRef.current;
+    if (el) {
+      el.focus();
+      const end = el.value.length;
+      el.setSelectionRange(end, end);
+    }
+    onFocusHandled?.();
+  }, [focusField, onFocusHandled]);
 
   return (
     <div className="grid grid-cols-[24px_1fr_1fr_72px] items-center gap-1 px-2 py-1 border-t border-signal-border">
@@ -89,12 +121,14 @@ function KVRow({
         aria-label="Toggle enabled"
       />
       <input
+        ref={keyRef}
         className="input"
         value={row.key}
         placeholder={placeholderKey}
         onChange={(e) => onUpdate(row.id, { key: e.target.value })}
       />
       <input
+        ref={valueRef}
         className="input"
         type={isSecret && !revealed && !isNew ? "password" : "text"}
         value={isSecret && !revealed && !isNew ? maskValue(row.value) : row.value}
@@ -137,6 +171,7 @@ function KVRow({
       </div>
       {showDescription && !isNew && (
         <input
+          ref={descRef}
           className="input col-span-4 mt-1"
           placeholder="description"
           value={row.description ?? ""}
