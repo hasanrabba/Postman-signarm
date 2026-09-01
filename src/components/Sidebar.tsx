@@ -22,25 +22,34 @@ export function Sidebar() {
         </div>
         <div className="ml-auto text-[10px] text-signal-muted">v0.1</div>
       </div>
-      <nav className="flex text-xs border-b border-signal-border">
+      {/* Five labels do not fit across a 320px sidebar on one row — they
+          collided and clipped ("collectionsenvironments"). Two rows of three
+          give each one room to render in full. */}
+      <nav className="grid grid-cols-3 text-xs border-b border-signal-border">
         {(["collections", "environments", "vault", "history", "mocks"] as Panel[]).map((p) => (
           <button
             key={p}
-            className={`flex-1 py-2 ${panel === p ? "text-white bg-signal-bg" : "text-signal-muted"}`}
+            className={`py-2 px-1 truncate border-b border-signal-border last:border-b-0 ${
+              panel === p ? "text-white bg-signal-bg" : "text-signal-muted hover:text-white"
+            }`}
+            aria-current={panel === p ? "page" : undefined}
             onClick={() => setPanel(p)}
           >
             {p}
           </button>
         ))}
       </nav>
-      <div className="p-2">
-        <input
-          className="input"
-          placeholder="search…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-      </div>
+      {panel === "collections" && (
+        <div className="p-2">
+          <input
+            className="input"
+            placeholder="search requests…"
+            aria-label="Search requests"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+      )}
       <div className="flex-1 overflow-auto">
         {panel === "collections" && <CollectionsPanel search={search} />}
         {panel === "environments" && <EnvironmentsPanel />}
@@ -208,7 +217,12 @@ function CollectionTree({
           {collection.versions.map((v) => (
             <div key={v.id} className="flex items-center gap-1 text-[11px] border border-signal-border rounded px-2 py-1">
               <span className="flex-1 truncate" title={v.message}>{v.message}</span>
-              <span className="text-signal-muted">{new Date(v.timestamp).toLocaleTimeString()}</span>
+              {/* Time alone made versions from different days indistinguishable. */}
+              <span className="text-signal-muted whitespace-nowrap" title={new Date(v.timestamp).toLocaleString()}>
+                {new Date(v.timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                {" "}
+                {new Date(v.timestamp).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+              </span>
               <button
                 className="btn !py-0 !text-[10px]"
                 onClick={async () => {
