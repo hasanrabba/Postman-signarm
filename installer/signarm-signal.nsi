@@ -9,7 +9,16 @@
 ; Build from the repo root with: node scripts/build-installer.mjs
 
 !define APPNAME        "Signarm Signal"
-!define APPVERSION     "0.1.0"
+; Passed in by scripts/build-installer.mjs as -DAPPVERSION=<package.json
+; version>. The literal below is only a fallback for a hand-run makensis:
+; this value has to match the launcher's CARGO_PKG_VERSION, because the
+; uninstaller cleans a cache directory stamped with it.
+!ifndef APPVERSION
+  !define APPVERSION   "0.1.0"
+!endif
+!ifndef APPVERSION4
+  !define APPVERSION4  "${APPVERSION}.0"
+!endif
 !define APPEXE         "SignarmSignal.exe"
 !define PUBLISHER      "Signarm"
 !define PUBLISHER_URL  "https://github.com/hasanrabba/Postman-signarm"
@@ -53,7 +62,7 @@ SetCompressor  /SOLID lzma
 
 !insertmacro MUI_LANGUAGE "English"
 
-VIProductVersion "0.1.0.0"
+VIProductVersion "${APPVERSION4}"
 VIAddVersionKey  "ProductName"     "${APPNAME}"
 VIAddVersionKey  "CompanyName"     "${PUBLISHER}"
 VIAddVersionKey  "FileDescription" "${APPNAME} installer"
@@ -62,20 +71,31 @@ VIAddVersionKey  "ProductVersion"  "${APPVERSION}"
 VIAddVersionKey  "LegalCopyright"  "Copyright (c) 2026 ${PUBLISHER}"
 
 Function CreateDesktopShortcut
-  SetShellVarContext current
-  CreateShortCut "$DESKTOP\${APPNAME}.lnk" "$INSTDIR\${APPEXE}" "" "$INSTDIR\${APPEXE}" 0
+  ; "current" resolves to whoever UAC elevated as, which is often not the
+  ; person installing. This is a per-machine install, so use the shared
+  ; desktop and every user gets the shortcut.
+  SetShellVarContext all
+  CreateShortCut "$DESKTOP\${APPNAME}.lnk" "$INSTDIR\${APPEXE}" "" "$INSTDIR\icon.ico" 0
 FunctionEnd
 
-Function CalcSize
-  ; Estimate installed size in KB for the Add/Remove Programs listing.
-  ClearErrors
-  IntOp $0 0 + 0
-  ${If} ${FileExists} "$INSTDIR\${APPEXE}"
-    FileOpen   $1 "$INSTDIR\${APPEXE}" r
+!macro AddFileSize FilePath
+  ${If} ${FileExists} "${FilePath}"
+    FileOpen   $1 "${FilePath}" r
     FileSeek   $1 0 END $2
     FileClose  $1
     IntOp $0 $0 + $2
   ${EndIf}
+!macroend
+
+Function CalcSize
+  ; Estimate installed size in KB for the Add/Remove Programs listing.
+  ; Counting only the exe under-reported the install by the icon and the
+  ; uninstaller.
+  ClearErrors
+  IntOp $0 0 + 0
+  !insertmacro AddFileSize "$INSTDIR\${APPEXE}"
+  !insertmacro AddFileSize "$INSTDIR\icon.ico"
+  !insertmacro AddFileSize "$INSTDIR\uninstall.exe"
   IntOp $0 $0 / 1024
   Push $0
 FunctionEnd
@@ -135,6 +155,25 @@ Section "Signarm Signal" SecMain
 SectionEnd
 
 Section "Uninstall"
+  ; Deleting a running exe fails silently: the files would stay behind while
+  ; the Add/Remove Programs entry disappeared, leaving an install that can no
+  ; longer be uninstalled from Settings. Windows holds a write lock on a
+  ; running image, so opening it for append tells us without needing a
+  ; third-party process-list plugin.
+  ${If} ${FileExists} "$INSTDIR\${APPEXE}"
+    ClearErrors
+    FileOpen $0 "$INSTDIR\${APPEXE}" a
+    ${If} ${Errors}
+      MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION \
+        "${APPNAME} appears to be running.$\r$\n$\r$\nClose it, then click OK to continue." \
+        IDOK continue
+      Abort
+      continue:
+    ${Else}
+      FileClose $0
+    ${EndIf}
+  ${EndIf}
+
   SetShellVarContext all
 
   Delete "$SMPROGRAMS\${APPNAME}.lnk"
@@ -149,15 +188,22 @@ Section "Uninstall"
   Delete "$INSTDIR\icon.ico"
   Delete "$INSTDIR\uninstall.exe"
   RMDir  "$INSTDIR"
+  ${If} ${FileExists} "$INSTDIR\${APPEXE}"
+    MessageBox MB_OK|MB_ICONEXCLAMATION \
+      "Some files could not be removed from $INSTDIR.$\r$\n$\r$\nDelete the folder manually once ${APPNAME} has closed."
+  ${EndIf}
 
   DeleteRegKey HKLM "${REG_UNINSTALL}"
   DeleteRegKey HKLM "Software\${PUBLISHER}\${APPNAME}"
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\App Paths\${APPEXE}"
   DeleteRegValue HKLM "Software\RegisteredApplications" "${APPNAME}"
 
-  ; Best-effort cleanup of per-user launcher cache. Leave the webview2
-  ; user data (LocalStorage with the user's collections) untouched so
-  ; reinstalls are lossless; see docs/README for the manual path.
+  ; Best-effort cleanup of the per-user launcher cache. Removing the whole
+  ; tree rather than only this version's folder, because upgrades leave one
+  ; directory per version behind and the uninstaller is the last chance to
+  ; collect them. The webview2 user data (LocalStorage with the user's
+  ; collections) lives under com.signarm.signal and is deliberately left
+  ; alone so reinstalls are lossless; see the README for the manual path.
   SetShellVarContext current
-  RMDir /r "$LOCALAPPDATA\SignarmSignal\${APPVERSION}"
+  RMDir /r "$LOCALAPPDATA\SignarmSignal"
 SectionEnd

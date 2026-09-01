@@ -38,10 +38,15 @@ describe("vault encryption", () => {
   });
 
   test("nothing readable is written to storage", async () => {
-    await saveSecrets([sec("db", "hunter2")], "pw");
+    // Both needles must be long enough that random base64 cannot produce
+    // them by chance: a two-character passphrase like "pw" turns up in
+    // roughly 3% of ciphertexts and made this assertion flaky.
+    const passphrase = "correct-horse-battery-staple-9f3a";
+    const value = "hunter2-plaintext-marker-7c41";
+    await saveSecrets([sec("db", value)], passphrase);
     const raw = localStorage.getItem("signal.vault.v1")!;
-    expect(raw).not.toContain("hunter2");
-    expect(raw).not.toContain("pw");
+    expect(raw).not.toContain(value);
+    expect(raw).not.toContain(passphrase);
     const blob = JSON.parse(raw);
     expect(blob.salt).toBeTruthy();
     expect(blob.iv).toBeTruthy();

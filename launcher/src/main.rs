@@ -25,6 +25,7 @@ const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // Microsoft's stable Evergreen Bootstrapper shortlink. Tiny (~150 KB)
 // installer that downloads and installs the full WebView2 runtime.
+#[cfg(windows)]
 const EVERGREEN_URL: &str = "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
 
 fn cache_root() -> PathBuf {
@@ -118,6 +119,23 @@ fn install_webview2_runtime() -> Result<(), Box<dyn Error>> {
 #[cfg(not(windows))]
 fn install_webview2_runtime() -> Result<(), Box<dyn Error>> { Ok(()) }
 
+/// Delete cache directories left by previous versions. Each upgrade writes a
+/// new `<cache>/<version>/` folder and nothing ever removed the old ones, so
+/// they accumulated a full copy of the app per release. Best-effort: a
+/// failure here must never stop the app from starting.
+fn prune_old_versions(root: &Path, keep: &str) {
+    let Ok(entries) = fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name == keep {
+            continue;
+        }
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 fn launch() -> Result<i32, Box<dyn Error>> {
     if !webview2_installed() {
         install_webview2_runtime()?;
@@ -132,6 +150,7 @@ fn launch() -> Result<i32, Box<dyn Error>> {
 
     write_if_missing(&exe_path, APP_EXE)?;
     write_if_missing(&dll_path, WEBVIEW2_DLL)?;
+    prune_old_versions(&cache_root(), APP_VERSION);
 
     let mut cmd = Command::new(&exe_path);
     cmd.args(std::env::args().skip(1));
