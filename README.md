@@ -134,6 +134,34 @@ Build artifacts:
 | `src-tauri/target/release/bundle/msi/Signarm Signal_0.1.0_x64_en-US.msi` | Windows Installer |
 | `src-tauri/target/release/bundle/nsis/Signarm Signal_0.1.0_x64-setup.exe` | NSIS installer |
 
+## QA agent
+
+The repo ships an adversarial QA agent under `.claude/`. It hunts reproducible
+bugs and proves each one with a failing test before reporting it — nothing gets
+raised that it could not reproduce, so a short report means it could not break
+anything, not that it did not look.
+
+| How | What you get |
+|---|---|
+| `/qa` | Runs the method in your current session. Best mid-task, when the conversation already knows what changed. |
+| `Use the qa-hunter agent to review the recent changes` | A fresh context that has not been persuaded the code is correct. Prefer this one. |
+
+Scope it however you like — `Have qa-hunter do a security-weighted pass on the
+proxy`, `...check the last 3 commits`, `...confirm the fixed bugs are still
+fixed`.
+
+It writes tests under `tests/` and reports. It does not modify `src/`, commit,
+or push; you decide what to do with each finding.
+
+**Why it is shaped the way it is.** `.claude/skills/qa/references/escape-analysis.md`
+lists the ten ways bugs have actually escaped this repo past a green suite —
+each with the defect it missed and the probe that catches that class. Real
+typing rather than `fireEvent.change`. The UI path rather than the store API.
+Rendering the app and looking at it. Overlapping async writes. Round-trip
+properties over duplicates. Attacking a guard's assumptions rather than its
+examples. That file doubles as the regression list, since several of these came
+back after being fixed once.
+
 ## Security posture
 
 Signarm Signal is a local API client — the threats worth caring about are
