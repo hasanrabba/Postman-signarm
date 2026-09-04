@@ -205,9 +205,18 @@ function queueVaultWrite(
   set: (partial: Partial<Store>) => void
 ): Promise<void> {
   const run = vaultWrites.then(async () => {
-    if (!vaultPassphrase) throw new Error("Vault is locked.");
+    const passphrase = vaultPassphrase;
+    if (!passphrase) throw new Error("Vault is locked.");
     const next = mutate(get().secrets);
-    await saveSecrets(next, vaultPassphrase);
+    await saveSecrets(next, passphrase);
+    // The derivation above takes hundreds of milliseconds, and Lock is the
+    // user's "get these out of memory now" action. If it landed while we
+    // were inside that window, writing `next` back would repopulate the
+    // store with plaintext secret values under a vaultUnlocked:false UI.
+    // The ciphertext is already saved and correct; only the in-memory copy
+    // is withheld. The same check covers a re-unlock under a different
+    // passphrase, whose own load already put the right list in state.
+    if (vaultPassphrase !== passphrase) return;
     set({ secrets: next, vaultExists: true });
   });
   // A rejected write must not wedge the queue for every later one.

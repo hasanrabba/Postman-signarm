@@ -68,6 +68,48 @@ describe("concurrent vault writes", () => {
   });
 });
 
+/* Lock is the user's "get these values out of memory now" action. A write
+   that was already inside the derivation when the lock landed used to
+   finish and write its list straight back into the store, so the panel
+   showed a locked vault over plaintext secrets still sitting in state. */
+describe("locking during a write in flight", () => {
+  test("a lock inside the derivation leaves no secret values in memory", async () => {
+    await useStore.getState().unlockVault("pw");
+    const writing = useStore.getState().addSecret("leaky", "super-secret-9999");
+    // Long enough for the queued task to clear its passphrase check and be
+    // inside saveSecrets, short enough that the derivation is still running.
+    await new Promise((r) => setTimeout(r, 25));
+    useStore.getState().lockVault();
+    await writing.catch(() => undefined);
+    expect(useStore.getState().vaultUnlocked).toBe(false);
+    expect(useStore.getState().secrets).toEqual([]);
+  }, 30_000);
+
+  test("no matter where across the derivation the lock lands", async () => {
+    for (const delay of [5, 50, 120, 250]) {
+      localStorage.clear();
+      useStore.setState(RESET);
+      useStore.getState().lockVault();
+      await useStore.getState().unlockVault("pw");
+      const writing = useStore.getState().addSecret("leaky", "s3cret");
+      await new Promise((r) => setTimeout(r, delay));
+      useStore.getState().lockVault();
+      await writing.catch(() => undefined);
+      expect(useStore.getState().secrets, `lock at +${delay}ms`).toEqual([]);
+    }
+  }, 60_000);
+
+  test("the write itself is not lost — it is on disk, just not in memory", async () => {
+    await useStore.getState().unlockVault("pw");
+    const writing = useStore.getState().addSecret("saved", "keep-me");
+    await new Promise((r) => setTimeout(r, 25));
+    useStore.getState().lockVault();
+    await writing.catch(() => undefined);
+    expect(useStore.getState().secrets).toEqual([]);
+    expect((await loadSecrets("pw")).map((s) => s.value)).toEqual(["keep-me"]);
+  }, 30_000);
+});
+
 describe("typing a secret value", () => {
   async function openVault() {
     render(<Home />);
