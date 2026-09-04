@@ -78,7 +78,7 @@ export async function executeRequest(
   // 3. send via transport — serializeForProxy may auto-add Content-Type etc.;
   // fold those back into `final.headers` so consumers can see the actual
   // headers that were sent (history, UI, test harness).
-  const payload = serializeForProxy(final);
+  const { warnings, ...payload } = serializeForProxy(final);
   mergeHeadersInto(final, payload.headers);
   const t0 = performance.now();
   let response: SignalResponse;
@@ -120,7 +120,7 @@ export async function executeRequest(
     request: final,
     response,
     tests: post.tests,
-    logs: [...pre.logs, ...post.logs],
+    logs: [...pre.logs, ...warnings, ...post.logs],
     envUpdates: { ...pre.setEnv, ...post.setEnv },
     globalUpdates: { ...pre.setGlobal, ...post.setGlobal },
     collectionUpdates: { ...pre.setCollection, ...post.setCollection },
@@ -152,15 +152,21 @@ function hasHeader(headers: Record<string, string>, name: string): boolean {
 function multipartBody(fields: { key: string; value: string; type?: "text" | "file"; fileName?: string }[]) {
   const boundary = "----SignalBoundary" + Math.random().toString(16).slice(2);
   const lines: string[] = [];
+  // A field name is interpolated straight into a quoted Content-Disposition
+  // parameter, so a name containing a quote or a newline used to break out of
+  // it and forge extra parameters. Browsers percent-encode exactly these
+  // three characters; do the same.
+  const q = (s: string) =>
+    s.replace(/\r/g, "%0D").replace(/\n/g, "%0A").replace(/"/g, "%22");
   for (const f of fields) {
     lines.push(`--${boundary}`);
     if (f.type === "file" && f.fileName) {
-      lines.push(`Content-Disposition: form-data; name="${f.key}"; filename="${f.fileName}"`);
+      lines.push(`Content-Disposition: form-data; name="${q(f.key)}"; filename="${q(f.fileName)}"`);
       lines.push("Content-Type: application/octet-stream");
       lines.push("");
       lines.push(`[file contents for ${f.fileName} omitted — attach via browser in a future release]`);
     } else {
-      lines.push(`Content-Disposition: form-data; name="${f.key}"`);
+      lines.push(`Content-Disposition: form-data; name="${q(f.key)}"`);
       lines.push("");
       lines.push(f.value);
     }
@@ -171,9 +177,24 @@ function multipartBody(fields: { key: string; value: string; type?: "text" | "fi
 }
 
 function serializeForProxy(req: SignalRequest) {
+  const warnings: string[] = [];
   const url = buildUrl(req);
   const headers: Record<string, string> = {};
-  for (const h of req.headers) if (h.enabled && h.key) headers[h.key] = h.value;
+  // Two rows with the same name used to collapse — the second simply
+  // overwrote the first and its value went out with no warning. The wire
+  // format carries one value per name, so combine them the way HTTP does:
+  // RFC 9110 joins repeated field lines with ", ", and RFC 6265 wants a
+  // single Cookie header whose crumbs are separated by "; ".
+  for (const h of req.headers) {
+    if (!h.enabled || !h.key) continue;
+    const existing = Object.keys(headers).find((k) => k.toLowerCase() === h.key.toLowerCase());
+    if (existing === undefined) {
+      headers[h.key] = h.value;
+    } else {
+      const sep = existing.toLowerCase() === "cookie" ? "; " : ", ";
+      headers[existing] = `${headers[existing]}${sep}${h.value}`;
+    }
+  }
   let body: string | undefined;
   const b = req.body;
   if (b.mode === "json" || b.mode === "text" || b.mode === "xml") {
@@ -199,12 +220,21 @@ function serializeForProxy(req: SignalRequest) {
     }
   } else if (b.mode === "graphql" && b.graphql) {
     let variables: unknown = {};
-    try { variables = b.graphql.variables ? JSON.parse(b.graphql.variables) : {}; } catch { /* noop */ }
+    // A typo in the variables JSON used to be swallowed here: the request
+    // went out with "variables":{} and the only symptom was the server
+    // complaining about a missing argument. Send it the same way, but say so.
+    try {
+      variables = b.graphql.variables ? JSON.parse(b.graphql.variables) : {};
+    } catch (e) {
+      warnings.push(
+        `[warn] the GraphQL variables are not valid JSON (${(e as Error).message}) — sent as {} instead.`
+      );
+    }
     body = JSON.stringify({ query: b.graphql.query, variables });
     if (!hasHeader(headers, "content-type"))
       headers["Content-Type"] = "application/json";
   }
-  return { method: req.method, url, headers, body };
+  return { method: req.method, url, headers, body, warnings };
 }
 
 function mergeHeadersInto(req: SignalRequest, actual: Record<string, string>): void {
@@ -220,7 +250,14 @@ function mergeHeadersInto(req: SignalRequest, actual: Record<string, string>): v
 function buildUrl(req: SignalRequest): string {
   const q = req.params.filter((p) => p.enabled && p.key)
     .map((p) => `${encodeURIComponent(p.key)}=${encodeURIComponent(p.value)}`).join("&");
-  return q ? `${req.url}${req.url.includes("?") ? "&" : "?"}${q}` : req.url;
+  if (!q) return req.url;
+  // The query has to go before the fragment. Appending blindly turned
+  // "http://x/page#section" into "http://x/page#section?a=1", where the
+  // params are part of the fragment and never reach the server at all.
+  const hash = req.url.indexOf("#");
+  const base = hash === -1 ? req.url : req.url.slice(0, hash);
+  const fragment = hash === -1 ? "" : req.url.slice(hash);
+  return `${base}${base.includes("?") ? "&" : "?"}${q}${fragment}`;
 }
 
 function toKV(table: Record<string, string>): KeyValue[] {

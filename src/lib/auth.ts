@@ -1,6 +1,22 @@
 import type { Auth, KeyValue, SignalRequest } from "./types";
 import { uid } from "./id";
 
+/**
+ * base64 of the UTF-8 bytes of `input`.
+ *
+ * btoa() alone is wrong here twice over: it throws outright on any code
+ * point above U+00FF (a Cyrillic or CJK password, an emoji), and for
+ * U+0080..U+00FF it silently emits the Latin-1 byte instead of the UTF-8
+ * pair, so "pässword" went out as bytes the server could not match and the
+ * request just came back 401. RFC 7617 requires UTF-8.
+ */
+function base64Utf8(input: string): string {
+  const bytes = new TextEncoder().encode(input);
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary);
+}
+
 /** Returns a copy of the request with auth applied to headers/params. */
 export function applyAuth(req: SignalRequest): SignalRequest {
   const auth = req.auth;
@@ -17,7 +33,7 @@ export function applyAuth(req: SignalRequest): SignalRequest {
   switch (auth.type) {
     case "basic": {
       const { username = "", password = "" } = auth.basic ?? { username: "", password: "" };
-      const token = btoa(`${username}:${password}`);
+      const token = base64Utf8(`${username}:${password}`);
       pushHeader("Authorization", `Basic ${token}`);
       break;
     }

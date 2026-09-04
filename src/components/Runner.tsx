@@ -40,11 +40,27 @@ export function Runner({ collectionId, onClose }: { collectionId: string; onClos
         collection: mergeVars(col.variables, collectionOverrides),
         secrets: secretsAsVars(secrets),
       };
-      const res = await executeRequest(r, { scope });
-      Object.assign(envOverrides, res.envUpdates);
-      Object.assign(globalOverrides, res.globalUpdates);
-      Object.assign(collectionOverrides, res.collectionUpdates);
-      setRows((prev) => [...prev, { name: r.name || r.url, response: res.response, tests: res.tests }]);
+      // One request must not be able to end the run. executeRequest handles
+      // its own network errors, but anything thrown before the send — a bad
+      // credential encoding, a malformed URL — used to escape this loop, so
+      // setRunning(false) never ran and the panel sat on "running" forever
+      // with the remaining requests never attempted.
+      try {
+        const res = await executeRequest(r, { scope });
+        Object.assign(envOverrides, res.envUpdates);
+        Object.assign(globalOverrides, res.globalUpdates);
+        Object.assign(collectionOverrides, res.collectionUpdates);
+        setRows((prev) => [...prev, { name: r.name || r.url, response: res.response, tests: res.tests }]);
+      } catch (e) {
+        setRows((prev) => [...prev, {
+          name: r.name || r.url,
+          response: {
+            status: 0, statusText: "Error", headers: {}, body: "",
+            elapsedMs: 0, sizeBytes: 0, error: (e as Error).message,
+          },
+          tests: [],
+        }]);
+      }
     }
     setRunning(false);
   };
@@ -73,6 +89,11 @@ export function Runner({ collectionId, onClose }: { collectionId: string; onClos
                 <span className="flex-1 truncate">{r.name}</span>
                 <span className="text-signal-muted text-xs">{r.response?.elapsedMs}ms</span>
               </div>
+              {/* A failed request showed as a red 0 and nothing else — not
+                  the timeout, not the DNS failure, not the reason. */}
+              {r.response?.error && (
+                <div className="text-xs pl-4 text-signal-err">{r.response.error}</div>
+              )}
               {r.tests.map((t, k) => (
                 <div key={k} className={`text-xs pl-4 ${t.passed ? "text-signal-ok" : "text-signal-err"}`}>
                   {t.passed ? "✓" : "✗"} {t.name} {t.error && <span className="text-signal-muted">— {t.error}</span>}
