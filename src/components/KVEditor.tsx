@@ -50,7 +50,7 @@ export function KVEditor({
 
   return (
     <div className="border border-signal-border rounded overflow-hidden">
-      <div className="grid grid-cols-[24px_1fr_1fr_72px] text-xs bg-signal-panel px-2 py-1 text-signal-muted">
+      <div className="grid grid-cols-[24px_1fr_1fr_132px] text-xs bg-signal-panel px-2 py-1 text-signal-muted">
         <div />
         <div>Key</div>
         <div>Value</div>
@@ -92,7 +92,17 @@ function KVRow({
   onFocusHandled?: () => void;
 }) {
   const [revealed, setRevealed] = useState(false);
+  const [focused, setFocused] = useState(false);
   const isNew = row.id === "__new";
+  // Mask a secret value at rest, but never while the field has focus.
+  // maskValue() is lossy — it returns bullets — so a masked field that was
+  // also editable would write bullets back as the value. That is why this
+  // used to be readOnly, and that is what made the field untypeable:
+  // auto-detection fires on the key name alone, so typing "Authorization"
+  // locked the value box before anything had been put in it. Revealing on
+  // focus keeps the shoulder-surf protection where it matters (at rest)
+  // and removes the need to lock the field at all.
+  const hidden = isSecret && !revealed && !isNew && !focused;
   const keyRef = useRef<HTMLInputElement | null>(null);
   const valueRef = useRef<HTMLInputElement | null>(null);
   const descRef = useRef<HTMLInputElement | null>(null);
@@ -112,7 +122,7 @@ function KVRow({
   }, [focusField, onFocusHandled]);
 
   return (
-    <div className="grid grid-cols-[24px_1fr_1fr_72px] items-center gap-1 px-2 py-1 border-t border-signal-border">
+    <div className="grid grid-cols-[24px_1fr_1fr_132px] items-center gap-1 px-2 py-1 border-t border-signal-border">
       <input
         type="checkbox"
         checked={row.enabled}
@@ -130,18 +140,19 @@ function KVRow({
       <input
         ref={valueRef}
         className="input"
-        type={isSecret && !revealed && !isNew ? "password" : "text"}
-        value={isSecret && !revealed && !isNew ? maskValue(row.value) : row.value}
+        type={hidden ? "password" : "text"}
+        value={hidden ? maskValue(row.value) : row.value}
         placeholder={placeholderValue}
         onChange={(e) => onUpdate(row.id, { value: e.target.value })}
-        readOnly={isSecret && !revealed && !isNew}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
       />
       <div className="flex items-center justify-end gap-1">
         {!isNew && (
           <>
             <button
               type="button"
-              className="text-[10px] text-signal-muted hover:text-white px-1 rounded border border-signal-border"
+              className="text-[10px] whitespace-nowrap text-signal-muted hover:text-white px-1 rounded border border-signal-border"
               title={row.secret ? "Unmark as secret" : "Mark value as secret"}
               aria-label={row.secret ? "Unmark secret" : "Mark as secret"}
               onClick={() => onUpdate(row.id, { secret: !row.secret })}
