@@ -50,6 +50,11 @@ export function autoFlagSecretsOnRequest(req: SignalRequest): SignalRequest {
       urlencoded: req.body.urlencoded
         ? flag(req.body.urlencoded, isSecretParamName)
         : req.body.urlencoded,
+      // A token imported from `curl -F token=...` deserves the same mask as
+      // one imported from a header.
+      formdata: req.body.formdata
+        ? (flag(req.body.formdata, isSecretParamName) as typeof req.body.formdata)
+        : req.body.formdata,
     },
   };
 }
@@ -80,12 +85,28 @@ export function redactRequest(req: SignalRequest, secretValues: string[] = []): 
     headers: redactKV(req.headers, isSecretHeaderName),
     params: redactKV(req.params, isSecretParamName),
     auth,
+    // Every mode in BodyMode has to be covered here. History is persisted,
+    // so a mode that falls through the spread writes whatever the user put
+    // in it — including a resolved vault secret — to localStorage in clear
+    // text. form-data and graphql were missed originally, which is exactly
+    // where upload tokens and auth variables live.
     body: {
       ...req.body,
       raw: maskLiterals(redactBodyString(req.body.raw ?? "")),
       urlencoded: req.body.urlencoded
         ? redactKV(req.body.urlencoded, isSecretParamName)
         : req.body.urlencoded,
+      formdata: req.body.formdata
+        ? req.body.formdata.map((kv) =>
+            kv.secret || isSecretParamName(kv.key)
+              ? { ...kv, value: REDACTED }
+              : { ...kv, value: maskLiterals(kv.value) }
+          )
+        : req.body.formdata,
+      graphql: req.body.graphql && {
+        query: maskLiterals(req.body.graphql.query),
+        variables: maskLiterals(redactBodyString(req.body.graphql.variables)),
+      },
     },
   };
 }
@@ -171,6 +192,11 @@ export function restoreRedacted(entry: SignalRequest, source?: SignalRequest): S
 
   return {
     ...entry,
+    // A masked URL cannot be unmasked in place — the literal was replaced
+    // mid-string. The source's URL is the unresolved template it came from,
+    // which is both recoverable and the right thing to re-send: it resolves
+    // again from the vault at send time.
+    url: entry.url.includes(REDACTED) ? source.url : entry.url,
     headers: restoreList(entry.headers, source.headers),
     params: restoreList(entry.params, source.params),
     auth: restoreAuth(entry.auth, source.auth),
@@ -180,6 +206,19 @@ export function restoreRedacted(entry: SignalRequest, source?: SignalRequest): S
       urlencoded: entry.body.urlencoded && source.body.urlencoded
         ? restoreList(entry.body.urlencoded, source.body.urlencoded)
         : entry.body.urlencoded,
+      formdata: entry.body.formdata && source.body.formdata
+        ? (restoreList(entry.body.formdata, source.body.formdata) as typeof entry.body.formdata)
+        : entry.body.formdata,
+      graphql: entry.body.graphql && source.body.graphql
+        ? {
+            query: entry.body.graphql.query.includes(REDACTED)
+              ? source.body.graphql.query
+              : entry.body.graphql.query,
+            variables: entry.body.graphql.variables.includes(REDACTED)
+              ? source.body.graphql.variables
+              : entry.body.graphql.variables,
+          }
+        : entry.body.graphql,
     },
   };
 }

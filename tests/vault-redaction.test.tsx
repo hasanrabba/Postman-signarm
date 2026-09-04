@@ -1,12 +1,21 @@
 /**
- * QA findings — these tests FAIL on purpose.
+ * Vault redaction and secret-edit regression guard.
  *
- * Each one reproduces a defect found by a /qa sweep of commit 3deef0a. They
- * are the proof, not a regression guard: they go green when the defect is
- * fixed, and at that point this file should be folded into the regular
- * suites. Until then `npx vitest run` is red by design.
+ * These began as the proof for four defects found by a /qa sweep of 3deef0a,
+ * all of them in vault code. They are kept because each one was reachable by
+ * an ordinary user and none was covered before:
  *
- * Run just these:  npx vitest run tests/qa-findings.test.tsx
+ *   1. a secret in the URL was masked but never restorable from history
+ *   2. Escape cancelled a secret edit only if you typed faster than the
+ *      500ms idle write
+ *   3. form-data and GraphQL bodies escaped redaction entirely, writing a
+ *      resolved secret to localStorage in clear text
+ *   4. a failed vault creation reported failure while leaving the vault
+ *      showing as unlocked
+ *
+ * The controls are deliberate: several tests assert a path that already
+ * worked, so a future regression in the masking mechanism itself is
+ * distinguishable from a regression in mode coverage.
  */
 import { describe, expect, test, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, waitFor } from "@testing-library/react";
@@ -15,6 +24,7 @@ import Home from "@/app/page";
 import { useStore } from "@/lib/store";
 import { redactRequest, restoreRedacted } from "@/lib/secrets";
 import { emptyRequest } from "@/lib/defaults";
+import { parseCurl } from "@/lib/curl";
 
 const RESET = {
   collections: {}, collectionOrder: [], environments: {}, globals: [], history: [], mocks: {},
@@ -176,5 +186,48 @@ describe("finding 4: a failed vault creation still reports as unlocked", () => {
     } finally {
       Storage.prototype.setItem = real;
     }
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Neighbouring paths fixed alongside the four findings.
+ * ------------------------------------------------------------------ */
+describe("redaction covers the rest of the body surface", () => {
+  const SECRET = "sk-live-super-secret-9999";
+
+  test("a graphql query as well as its variables", () => {
+    const r = redactRequest(emptyRequest({ body: { mode: "graphql", raw: "", urlencoded: [], formdata: [],
+      graphql: { query: `query { a(t:"${SECRET}") }`, variables: "{}" } } }), [SECRET]);
+    expect(r.body.graphql?.query).not.toContain(SECRET);
+  });
+
+  test("a form-data field named like a credential is fully masked", () => {
+    const r = redactRequest(emptyRequest({ body: { mode: "form-data", raw: "", urlencoded: [],
+      formdata: [{ id: "1", key: "access_token", value: "anything", enabled: true }],
+      graphql: { query: "", variables: "" } } }));
+    expect(r.body.formdata?.[0].value).toBe("[REDACTED]");
+  });
+
+  test("a redacted form-data field is restorable", () => {
+    const live = emptyRequest({ body: { mode: "form-data", raw: "", urlencoded: [],
+      formdata: [{ id: "f1", key: "token", value: "real-token-value", enabled: true }],
+      graphql: { query: "", variables: "" } } });
+    const back = restoreRedacted(redactRequest(live), live);
+    expect(back.body.formdata?.[0].value).toBe("real-token-value");
+  });
+
+  test("a token imported from curl -F is flagged secret in the UI", () => {
+    const r = parseCurl("curl -F token=abc123 -F name=alice https://x.example.com/upload")!;
+    const token = r.body.formdata!.find((f) => f.key === "token")!;
+    const name = r.body.formdata!.find((f) => f.key === "name")!;
+    expect(token.secret).toBe(true);
+    expect(name.secret).toBeFalsy();
+  });
+
+  test("an ordinary form-data value is left alone when nothing is unlocked", () => {
+    const r = redactRequest(emptyRequest({ body: { mode: "form-data", raw: "", urlencoded: [],
+      formdata: [{ id: "1", key: "caption", value: "a holiday photo", enabled: true }],
+      graphql: { query: "", variables: "" } } }), []);
+    expect(r.body.formdata?.[0].value).toBe("a holiday photo");
   });
 });

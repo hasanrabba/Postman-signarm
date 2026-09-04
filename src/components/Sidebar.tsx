@@ -901,6 +901,11 @@ function SecretValueInput({
   const updateSecret = useStore((st) => st.updateSecret);
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState(false);
+  // The value as it stood when this edit began. The idle write below can
+  // commit partway through typing, so `value` is not a reliable thing to
+  // revert to — without this, whether Escape cancelled depended on how fast
+  // you typed.
+  const [baseline, setBaseline] = useState("");
   // Derive rather than mirror: outside an edit the committed value is shown
   // directly, so there is no state to keep in sync and no sync effect.
   const shown = editing ? draft : value;
@@ -925,12 +930,18 @@ function SecretValueInput({
       type={revealed ? "text" : "password"}
       aria-label={`Value of ${name}`}
       value={shown}
-      onFocus={() => { setDraft(value); setEditing(true); }}
+      onFocus={() => { setDraft(value); setBaseline(value); setEditing(true); }}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {
         if (e.key === "Enter") { e.preventDefault(); commit(); }
-        else if (e.key === "Escape") { e.preventDefault(); setDraft(value); setEditing(false); }
+        else if (e.key === "Escape") {
+          e.preventDefault();
+          setDraft(baseline);
+          setEditing(false);
+          // Undo an idle write that already landed, so cancel means cancel.
+          if (baseline !== value) void updateSecret(secretId, { value: baseline });
+        }
       }}
     />
   );

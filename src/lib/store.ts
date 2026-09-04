@@ -620,11 +620,16 @@ export const useStore = create<Store>()(
       unlockVault: async (passphrase) => {
         try {
           const secrets = await loadSecrets(passphrase);
+          // A vault that didn't exist yet is created here, so the passphrase
+          // is locked in before a secret is added. Do it *before* committing
+          // state: if the write fails (quota, storage disabled, private
+          // mode) we used to return false having already set vaultUnlocked,
+          // leaving the panel showing an unlocked view over a vault that
+          // does not exist — and hiding the error, which only renders in the
+          // locked branch.
+          if (!hasVault()) await saveSecrets(secrets, passphrase);
           vaultPassphrase = passphrase;
           set({ secrets, vaultUnlocked: true, vaultExists: true, vaultError: undefined });
-          // A vault that didn't exist yet is created on first write; persist
-          // now so the passphrase is locked in even before a secret is added.
-          if (!hasVault()) await saveSecrets(secrets, passphrase);
           return true;
         } catch (e) {
           set({
