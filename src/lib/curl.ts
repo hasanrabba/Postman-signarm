@@ -1,7 +1,9 @@
 import { uid } from "./id";
 import type { KeyValue, Method, SignalRequest } from "./types";
-import { emptyAuth } from "./auth";
+import { base64Utf8, emptyAuth } from "./auth";
 import { autoFlagSecretsOnRequest } from "./secrets";
+import { appendQuery, splitFragment } from "./url";
+import { shellArg } from "./shell";
 
 const METHODS: Method[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 
@@ -82,6 +84,21 @@ function expandShortFlags(tokens: string[]): string[] {
   return out;
 }
 
+/**
+ * Flags we do not act on but that always consume the next token. Without
+ * this, `curl --proxy http://proxy:8080 https://real/` treated the proxy as
+ * the URL, because the generic unknown-flag heuristic refuses to swallow a
+ * value that looks like a URL.
+ */
+const FLAGS_WITH_ARG = new Set([
+  "-x", "--proxy", "--proxy-user", "-U", "--noproxy",
+  "-o", "--output", "-w", "--write-out", "-m", "--max-time",
+  "--connect-timeout", "--retry", "--retry-delay", "--retry-max-time",
+  "--resolve", "--interface", "--limit-rate", "--max-redirs",
+  "--cacert", "--capath", "--cert", "--key", "--cert-type", "--key-type",
+  "--dns-servers", "--unix-socket", "--range", "-r",
+]);
+
 export function parseCurl(cmd: string): SignalRequest | null {
   let tokens = tokenize(cmd);
   if (!tokens.length) return null;
@@ -98,6 +115,7 @@ export function parseCurl(cmd: string): SignalRequest | null {
   let bodyMode: SignalRequest["body"]["mode"] = "none";
   let isUrlEncoded = false;
   let basicUser: string | undefined;
+  let getWithData = false;
 
   const addHeader = (raw: string) => {
     const colon = raw.indexOf(":");
@@ -186,7 +204,7 @@ export function parseCurl(cmd: string): SignalRequest | null {
         break;
       }
       case "-G": case "--get":
-        method = "GET"; explicitMethod = true;
+        method = "GET"; explicitMethod = true; getWithData = true;
         break;
       // no-arg flags we can safely ignore
       case "--compressed": case "-L": case "--location":
@@ -197,6 +215,7 @@ export function parseCurl(cmd: string): SignalRequest | null {
       case "-N": case "--no-buffer":
         break;
       default:
+        if (FLAGS_WITH_ARG.has(t)) { i++; break; }
         if (t.startsWith("-")) {
           // Unknown flag; if the next token starts with `-` or we're at the end,
           // treat this as a no-arg flag. Otherwise skip its value too to avoid
@@ -219,9 +238,9 @@ export function parseCurl(cmd: string): SignalRequest | null {
     // colon the header decodes to a username with no separator, which every
     // server rejects.
     const pair = basicUser.includes(":") ? basicUser : `${basicUser}:`;
-    const token = typeof btoa !== "undefined"
-      ? btoa(pair)
-      : Buffer.from(pair, "utf8").toString("base64");
+    // btoa() alone throws on any code point above U+00FF, so `curl -u
+    // user:пароль` aborted the whole import. RFC 7617 wants UTF-8 anyway.
+    const token = base64Utf8(pair);
     headers.push({ id: uid("h"), key: "Authorization", value: `Basic ${token}`, enabled: true });
   }
 
@@ -235,11 +254,14 @@ export function parseCurl(cmd: string): SignalRequest | null {
     else if (/^<\?xml|^<[a-zA-Z]/.test(bodyRaw.trim())) bodyMode = "xml";
   }
 
-  // Extract query params from URL
-  if (url.includes("?")) {
-    const [base, q] = url.split("?");
-    url = base;
-    for (const pair of q.split("&")) {
+  // Extract query params from URL. The fragment is not part of the query —
+  // splitting on "?" alone left the last param holding "1#section" — and
+  // destructuring the split dropped everything after a second "?".
+  const [beforeHash, fragment] = splitFragment(url);
+  const qStart = beforeHash.indexOf("?");
+  if (qStart >= 0) {
+    url = beforeHash.slice(0, qStart) + fragment;
+    for (const pair of beforeHash.slice(qStart + 1).split("&")) {
       if (!pair) continue;
       const [k, v] = splitOnce(pair, "=");
       params.push({
@@ -249,6 +271,19 @@ export function parseCurl(cmd: string): SignalRequest | null {
         enabled: true,
       });
     }
+  }
+
+  // `curl -G -d 'a=b'` sends a GET with a=b in the query string, not a GET
+  // carrying a body. Keeping it as a body meant the server never saw it.
+  if (getWithData && bodyRaw) {
+    for (const pair of bodyRaw.split("&")) {
+      if (!pair) continue;
+      const [k, v] = splitOnce(pair, "=");
+      params.push({ id: uid("p"), key: safeDecode(k), value: safeDecode(v), enabled: true });
+    }
+    bodyRaw = "";
+    bodyMode = "none";
+    isUrlEncoded = false;
   }
 
   const urlencoded: KeyValue[] = bodyMode === "form-urlencoded"
@@ -296,40 +331,37 @@ export function toCurl(req: SignalRequest): string {
     .filter((p) => p.enabled && p.key)
     .map((p) => `${encodeURIComponent(p.key)}=${encodeURIComponent(p.value)}`)
     .join("&");
-  const url = q ? `${req.url}${req.url.includes("?") ? "&" : "?"}${q}` : req.url;
-  parts.push(`'${shellQuote(url)}'`);
+  const url = appendQuery(req.url, q);
+  parts.push(shellArg(url));
   for (const h of req.headers) {
     if (!h.enabled || !h.key) continue;
-    parts.push(`-H '${h.key}: ${shellQuote(h.value)}'`);
+    // The key shares the quoted argument with the value, so a quote in the
+    // key used to close the string early and mangle the whole command.
+    parts.push(`-H ${shellArg(`${h.key}: ${h.value}`)}`);
   }
   const b = req.body;
   if (b.mode === "json" || b.mode === "text" || b.mode === "xml") {
-    if (b.raw) parts.push(`--data-raw '${shellQuote(b.raw)}'`);
+    if (b.raw) parts.push(`--data-raw ${shellArg(b.raw)}`);
   } else if (b.mode === "form-urlencoded" && b.urlencoded) {
     for (const kv of b.urlencoded) {
       if (kv.enabled && kv.key) {
-        parts.push(`--data-urlencode '${kv.key}=${shellQuote(kv.value)}'`);
+        parts.push(`--data-urlencode ${shellArg(`${kv.key}=${kv.value}`)}`);
       }
     }
   } else if (b.mode === "form-data" && b.formdata) {
     for (const kv of b.formdata) {
       if (!kv.enabled || !kv.key) continue;
-      if (kv.type === "file") parts.push(`-F '${kv.key}=@${kv.fileName ?? ""}'`);
-      else parts.push(`-F '${kv.key}=${shellQuote(kv.value)}'`);
+      if (kv.type === "file") parts.push(`-F ${shellArg(`${kv.key}=@${kv.fileName ?? ""}`)}`);
+      else parts.push(`-F ${shellArg(`${kv.key}=${kv.value}`)}`);
     }
   } else if (b.mode === "graphql" && b.graphql) {
     const payload = JSON.stringify({
       query: b.graphql.query,
       variables: safeJSON(b.graphql.variables),
     });
-    parts.push(`--data-raw '${shellQuote(payload)}'`);
+    parts.push(`--data-raw ${shellArg(payload)}`);
   }
   return parts.join(" \\\n  ");
-}
-
-/** Escape a value for single-quoted shell context. */
-function shellQuote(v: string): string {
-  return v.replace(/'/g, "'\\''");
 }
 
 function safeJSON(src: string) {

@@ -3,6 +3,7 @@ import { applyAuth } from "./auth";
 import { resolveKV, resolveVars, type VarScope } from "./variables";
 import { runScript } from "./scripting";
 import { sendProxy } from "./transport";
+import { appendQuery } from "./url";
 
 function resolveAuth(auth: Auth, scope: VarScope): Auth {
   const r = (s?: string) => (s === undefined ? s : resolveVars(s, scope));
@@ -251,14 +252,7 @@ function mergeHeadersInto(req: SignalRequest, actual: Record<string, string>): v
 function buildUrl(req: SignalRequest): string {
   const q = req.params.filter((p) => p.enabled && p.key)
     .map((p) => `${encodeURIComponent(p.key)}=${encodeURIComponent(p.value)}`).join("&");
-  if (!q) return req.url;
-  // The query has to go before the fragment. Appending blindly turned
-  // "http://x/page#section" into "http://x/page#section?a=1", where the
-  // params are part of the fragment and never reach the server at all.
-  const hash = req.url.indexOf("#");
-  const base = hash === -1 ? req.url : req.url.slice(0, hash);
-  const fragment = hash === -1 ? "" : req.url.slice(hash);
-  return `${base}${base.includes("?") ? "&" : "?"}${q}${fragment}`;
+  return appendQuery(req.url, q);
 }
 
 function toKV(table: Record<string, string>): KeyValue[] {

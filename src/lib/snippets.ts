@@ -1,6 +1,8 @@
 import type { SignalRequest } from "./types";
 import { applyAuth } from "./auth";
 import { toCurl } from "./curl";
+import { appendQuery } from "./url";
+import { shellArg } from "./shell";
 
 export type SnippetLang = "curl" | "fetch" | "node-fetch" | "python-requests" | "go" | "httpie";
 
@@ -49,7 +51,7 @@ function formFields(req: SignalRequest) {
 function urlWithQuery(req: SignalRequest): string {
   const q = req.params.filter((p) => p.enabled && p.key)
     .map((p) => `${encodeURIComponent(p.key)}=${encodeURIComponent(p.value)}`).join("&");
-  return q ? `${req.url}${req.url.includes("?") ? "&" : "?"}${q}` : req.url;
+  return appendQuery(req.url, q);
 }
 
 function fetchSnippet(req: SignalRequest, node = false): string {
@@ -167,16 +169,18 @@ function httpieSnippet(req: SignalRequest): string {
   const fields = formFields(req);
   const parts: string[] = ["http"];
   if (fields) parts.push("--form");
-  parts.push(req.method, `'${urlWithQuery(req)}'`);
+  parts.push(req.method, shellArg(urlWithQuery(req)));
   for (const h of req.headers) {
     if (!h.enabled || !h.key) continue;
     // HTTPie derives the multipart boundary itself.
     if (fields && h.key.toLowerCase() === "content-type") continue;
-    parts.push(`${h.key}:${h.value}`);
+    parts.push(shellArg(`${h.key}:${h.value}`));
   }
   if (fields) {
     for (const f of fields) {
-      parts.push(f.type === "file" ? `${f.key}@${f.fileName ?? "file.bin"}` : `${f.key}=${f.value}`);
+      parts.push(shellArg(
+        f.type === "file" ? `${f.key}@${f.fileName ?? "file.bin"}` : `${f.key}=${f.value}`
+      ));
     }
     return parts.join(" ");
   }

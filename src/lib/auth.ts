@@ -10,7 +10,7 @@ import { uid } from "./id";
  * pair, so "pässword" went out as bytes the server could not match and the
  * request just came back 401. RFC 7617 requires UTF-8.
  */
-function base64Utf8(input: string): string {
+export function base64Utf8(input: string): string {
   const bytes = new TextEncoder().encode(input);
   let binary = "";
   for (const b of bytes) binary += String.fromCharCode(b);
