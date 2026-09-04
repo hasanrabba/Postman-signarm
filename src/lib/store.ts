@@ -97,9 +97,9 @@ interface Store {
    */
   applyScriptUpdates: (
     updates: {
-      env?: Record<string, string>;
-      globals?: Record<string, string>;
-      collection?: Record<string, string>;
+      env?: Record<string, string | null>;
+      globals?: Record<string, string | null>;
+      collection?: Record<string, string | null>;
     },
     collectionId?: string
   ) => void;
@@ -140,25 +140,32 @@ export const emptyRequest = emptyRequestDefault;
  */
 export function mergeVars(
   base: KeyValue[] | undefined,
-  overrides: Record<string, string>
+  overrides: Record<string, string | null>
 ): KeyValue[] {
   const result: KeyValue[] = [];
   const seen = new Set<string>();
   for (const kv of base ?? []) {
     if (Object.prototype.hasOwnProperty.call(overrides, kv.key)) {
-      result.push({ ...kv, value: overrides[kv.key], enabled: true });
+      const next = overrides[kv.key];
+      // null means sg.env.unset() — drop the variable rather than blanking
+      // it. An absent variable renders as a literal {{name}}; one set to ""
+      // renders as nothing, so "unset" that assigned "" was not an unset.
+      if (next === null) { seen.add(kv.key); continue; }
+      result.push({ ...kv, value: next, enabled: true });
       seen.add(kv.key);
     } else {
       result.push(kv);
     }
   }
   for (const [k, v] of Object.entries(overrides)) {
-    if (!seen.has(k)) result.push({ id: uid("ov"), key: k, value: v, enabled: true });
+    // A null here is a delete for a variable that was not defined anyway.
+    if (v === null || seen.has(k)) continue;
+    result.push({ id: uid("ov"), key: k, value: v, enabled: true });
   }
   return result;
 }
 
-const hasKeys = (o?: Record<string, string>) => !!o && Object.keys(o).length > 0;
+const hasKeys = (o?: Record<string, string | null>) => !!o && Object.keys(o).length > 0;
 
 /** Snapshots older than this are dropped; each one holds a full copy of the
  *  collection, and localStorage is a few megabytes. */

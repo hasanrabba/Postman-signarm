@@ -31,9 +31,10 @@ export interface ExecuteResult {
   response: SignalResponse;
   tests: TestResult[];
   logs: string[];
-  envUpdates: Record<string, string>;
-  globalUpdates: Record<string, string>;
-  collectionUpdates: Record<string, string>;
+  /** A null value means the script asked for the variable to be removed. */
+  envUpdates: Record<string, string | null>;
+  globalUpdates: Record<string, string | null>;
+  collectionUpdates: Record<string, string | null>;
 }
 
 export async function executeRequest(

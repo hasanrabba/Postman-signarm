@@ -11,9 +11,10 @@ export interface ScriptContext {
 export interface ScriptOutput {
   logs: string[];
   tests: TestResult[];
-  setEnv: Record<string, string>;
-  setGlobal: Record<string, string>;
-  setCollection: Record<string, string>;
+  /** A null value means "delete this variable" — see sg.env.unset. */
+  setEnv: Record<string, string | null>;
+  setGlobal: Record<string, string | null>;
+  setCollection: Record<string, string | null>;
 }
 
 /**
@@ -53,6 +54,14 @@ export function runScript(script: string, ctx: ScriptContext): ScriptOutput {
     },
   };
 
+  // The same own-property guard variables.get already used. Reading these
+  // tables with plain indexing handed back Object.prototype members, so
+  // sg.env.get("toString") returned a function for a variable nobody had
+  // defined. resolveVars guards against this with a null-prototype table;
+  // these three accessors were the ones that missed it.
+  const read = (table: Record<string, string>, k: string) =>
+    own(table, k) ? table[k] : undefined;
+
   const sg = {
     request: {
       method: ctx.request.method,
@@ -71,25 +80,28 @@ export function runScript(script: string, ctx: ScriptContext): ScriptOutput {
       text: () => ctx.response?.body,
     },
     env: {
-      get: (k: string) => ctx.env[k],
+      get: (k: string) => read(ctx.env, k),
       set: (k: string, v: unknown) => { output.setEnv[k] = toStr(v); },
-      unset: (k: string) => { output.setEnv[k] = ""; },
+      unset: (k: string) => { output.setEnv[k] = null; },
     },
     globals: {
-      get: (k: string) => ctx.global[k],
+      get: (k: string) => read(ctx.global, k),
       set: (k: string, v: unknown) => { output.setGlobal[k] = toStr(v); },
-      unset: (k: string) => { output.setGlobal[k] = ""; },
+      unset: (k: string) => { output.setGlobal[k] = null; },
     },
     collection: {
-      get: (k: string) => ctx.collection[k],
+      get: (k: string) => read(ctx.collection, k),
       set: (k: string, v: unknown) => { output.setCollection[k] = toStr(v); },
-      unset: (k: string) => { output.setCollection[k] = ""; },
+      unset: (k: string) => { output.setCollection[k] = null; },
     },
     variables,
     test: (name: string, fn: () => void) => {
       try { fn(); output.tests.push({ name, passed: true }); }
       catch (e) {
-        output.tests.push({ name, passed: false, error: (e as Error).message });
+        // `throw "nope"` is legal and used to produce a failed test with an
+        // undefined message, so the UI showed a red tick and nothing else.
+        const message = e instanceof Error ? e.message : safeFmt(e);
+        output.tests.push({ name, passed: false, error: message || String(e) });
       }
     },
     expect: (actual: unknown) => ({
@@ -168,14 +180,20 @@ function safeFmt(x: unknown): string {
   if (x === undefined) return "undefined";
   if (typeof x === "string") return x;
   if (typeof x === "bigint") return `${x.toString()}n`;
-  const seen = new WeakSet<object>();
+  // Track the current ancestor chain, not every object ever seen. A set of
+  // everything seen also flags the *second* appearance of a shared child —
+  // logging { first: shared, second: shared } reported "[Circular]" for a
+  // structure with no cycle in it at all.
+  const ancestors: unknown[] = [];
   try {
-    return JSON.stringify(x, (_key, value) => {
+    return JSON.stringify(x, function (this: unknown, _key, value) {
       if (typeof value === "bigint") return value.toString() + "n";
-      if (typeof value === "object" && value !== null) {
-        if (seen.has(value as object)) return "[Circular]";
-        seen.add(value as object);
+      if (typeof value !== "object" || value === null) return value;
+      while (ancestors.length > 0 && ancestors[ancestors.length - 1] !== this) {
+        ancestors.pop();
       }
+      if (ancestors.includes(value)) return "[Circular]";
+      ancestors.push(value);
       return value;
     }) ?? String(x);
   } catch {
