@@ -187,13 +187,32 @@ function reconcileTabs(
  */
 let vaultPassphrase: string | undefined;
 
-async function persistVault(
-  next: Secret[],
+/**
+ * Serialises vault writes.
+ *
+ * Every write is a read-modify-write across an await of a 310,000-iteration
+ * PBKDF2 derivation — a window of hundreds of milliseconds. Two overlapping
+ * writes that each captured the list before the other finished would both
+ * save their own copy, and the later one silently destroyed the earlier
+ * secret. Queueing the writes, and reading the list *inside* the queue
+ * rather than at call time, makes each one build on the last.
+ */
+let vaultWrites: Promise<unknown> = Promise.resolve();
+
+function queueVaultWrite(
+  mutate: (current: Secret[]) => Secret[],
+  get: () => Store,
   set: (partial: Partial<Store>) => void
 ): Promise<void> {
-  if (!vaultPassphrase) throw new Error("Vault is locked.");
-  await saveSecrets(next, vaultPassphrase);
-  set({ secrets: next, vaultExists: true });
+  const run = vaultWrites.then(async () => {
+    if (!vaultPassphrase) throw new Error("Vault is locked.");
+    const next = mutate(get().secrets);
+    await saveSecrets(next, vaultPassphrase);
+    set({ secrets: next, vaultExists: true });
+  });
+  // A rejected write must not wedge the queue for every later one.
+  vaultWrites = run.catch(() => undefined);
+  return run;
 }
 
 function newCollection(name: string): Collection {
@@ -621,15 +640,19 @@ export const useStore = create<Store>()(
         set({ secrets: [], vaultUnlocked: false, vaultError: undefined, vaultExists: hasVault() });
       },
       addSecret: async (name, value) => {
-        const next = [...get().secrets, { id: uid("sec"), name, value, createdAt: Date.now() }];
-        await persistVault(next, set);
+        await queueVaultWrite(
+          (cur) => [...cur, { id: uid("sec"), name, value, createdAt: Date.now() }],
+          get, set
+        );
       },
       updateSecret: async (id, patch) => {
-        const next = get().secrets.map((x) => (x.id === id ? { ...x, ...patch } : x));
-        await persistVault(next, set);
+        await queueVaultWrite(
+          (cur) => cur.map((x) => (x.id === id ? { ...x, ...patch } : x)),
+          get, set
+        );
       },
       deleteSecret: async (id) => {
-        await persistVault(get().secrets.filter((x) => x.id !== id), set);
+        await queueVaultWrite((cur) => cur.filter((x) => x.id !== id), get, set);
       },
 
       createMock: (name) => {

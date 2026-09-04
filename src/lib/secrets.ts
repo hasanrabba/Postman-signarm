@@ -137,17 +137,35 @@ function redactBodyString(raw: string): string {
 export function restoreRedacted(entry: SignalRequest, source?: SignalRequest): SignalRequest {
   if (!source) return entry;
 
-  const byKey = (list: KeyValue[]) => {
-    const m = new Map<string, string>();
-    for (const kv of list) if (kv.key) m.set(kv.key.toLowerCase(), kv.value);
-    return m;
-  };
+  /**
+   * Match rows to the source by id first — redaction preserves ids, so this
+   * is exact. Fall back to the nth row carrying the same name, because
+   * duplicate header and param names are legal (Set-Cookie, repeated Accept)
+   * and a name-keyed lookup gave every duplicate the last one's value.
+   */
   const restoreList = (list: KeyValue[], srcList: KeyValue[]): KeyValue[] => {
-    const src = byKey(srcList);
+    const byId = new Map<string, string>();
+    const byName = new Map<string, string[]>();
+    for (const kv of srcList) {
+      if (kv.id) byId.set(kv.id, kv.value);
+      if (kv.key) {
+        const k = kv.key.toLowerCase();
+        const bucket = byName.get(k);
+        if (bucket) bucket.push(kv.value);
+        else byName.set(k, [kv.value]);
+      }
+    }
+    const taken = new Map<string, number>();
     return list.map((kv) => {
       if (kv.value !== REDACTED) return kv;
-      const real = src.get(kv.key.toLowerCase());
-      return real === undefined ? kv : { ...kv, value: real };
+      const byIdHit = byId.get(kv.id);
+      if (byIdHit !== undefined) return { ...kv, value: byIdHit };
+      const k = kv.key.toLowerCase();
+      const bucket = byName.get(k);
+      if (!bucket) return kv;
+      const seen = taken.get(k) ?? 0;
+      taken.set(k, seen + 1);
+      return seen < bucket.length ? { ...kv, value: bucket[seen] } : kv;
     });
   };
 

@@ -769,7 +769,7 @@ function IconButton({
 function VaultPanel() {
   const {
     vaultUnlocked, vaultExists, vaultError, secrets,
-    unlockVault, lockVault, addSecret, updateSecret, deleteSecret,
+    unlockVault, lockVault, addSecret, deleteSecret,
   } = useStore();
   const [passphrase, setPassphrase] = useState("");
   const [busy, setBusy] = useState(false);
@@ -869,15 +869,69 @@ function VaultPanel() {
               Delete
             </button>
           </div>
-          <input
-            className="input w-full text-xs"
-            type={revealed[sec.id] ? "text" : "password"}
-            aria-label={`Value of ${sec.name}`}
+          <SecretValueInput
+            secretId={sec.id}
+            name={sec.name}
             value={sec.value}
-            onChange={(e) => void updateSecret(sec.id, { value: e.target.value })}
+            revealed={Boolean(revealed[sec.id])}
           />
         </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * Editor for one stored secret's value.
+ *
+ * Persisting per keystroke was doubly wrong here: each save runs a 310,000
+ * iteration PBKDF2, and the input is controlled by state that only updates
+ * once that finishes — so the field lagged a character behind and typing a
+ * fourteen-character key stored a single letter. The draft is local while
+ * you type and is written once, on blur or Enter.
+ */
+function SecretValueInput({
+  secretId, name, value, revealed,
+}: {
+  secretId: string;
+  name: string;
+  value: string;
+  revealed: boolean;
+}) {
+  const updateSecret = useStore((st) => st.updateSecret);
+  const [draft, setDraft] = useState("");
+  const [editing, setEditing] = useState(false);
+  // Derive rather than mirror: outside an edit the committed value is shown
+  // directly, so there is no state to keep in sync and no sync effect.
+  const shown = editing ? draft : value;
+
+  // Blur alone would lose a secret typed just before the panel or window
+  // closes, so also write once typing pauses. `updateSecret` is a stable
+  // store action, so this timer resets on keystrokes and nothing else.
+  useEffect(() => {
+    if (!editing || draft === value) return;
+    const t = setTimeout(() => { void updateSecret(secretId, { value: draft }); }, 500);
+    return () => clearTimeout(t);
+  }, [draft, value, editing, secretId, updateSecret]);
+
+  const commit = () => {
+    setEditing(false);
+    if (draft !== value) void updateSecret(secretId, { value: draft });
+  };
+
+  return (
+    <input
+      className="input w-full text-xs"
+      type={revealed ? "text" : "password"}
+      aria-label={`Value of ${name}`}
+      value={shown}
+      onFocus={() => { setDraft(value); setEditing(true); }}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") { e.preventDefault(); commit(); }
+        else if (e.key === "Escape") { e.preventDefault(); setDraft(value); setEditing(false); }
+      }}
+    />
   );
 }
