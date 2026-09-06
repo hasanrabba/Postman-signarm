@@ -8,6 +8,7 @@ import { describe, test, expect } from "vitest";
 import { toCurl } from "@/lib/curl";
 import { generateSnippet } from "@/lib/snippets";
 import { emptyAuth } from "@/lib/auth";
+import { resolveRequest } from "@/lib/executor";
 import type { SignalRequest } from "@/lib/types";
 
 const kv = (key: string, value: string) => ({ id: key, key, value, enabled: true });
@@ -104,5 +105,42 @@ describe("the exported command carries the Content-Type the app sends", () => {
       },
     });
     expect(generateSnippet(form, "fetch")).not.toContain("multipart/form-data");
+  });
+});
+
+/* A command still carrying {{version}} in its URL is one real curl refuses to
+   run ("nested brace in URL"); one carrying {{token}} in a header sends that
+   literal text and comes back 401. */
+describe("a snippet is generated from the resolved request", () => {
+  const scope = {
+    global: [kv("host", "api.example.com")],
+    environment: [kv("token", "s3cr3t")],
+    collection: [kv("version", "v2")],
+  };
+
+  test("the URL's variables are substituted", () => {
+    const req = request({ url: "https://{{host}}/{{version}}/users" });
+    expect(toCurl(resolveRequest(req, scope))).toContain("https://api.example.com/v2/users");
+  });
+
+  test("a header's variables are substituted", () => {
+    const req = request({ headers: [kv("X-Token", "{{token}}")] });
+    expect(toCurl(resolveRequest(req, scope))).toContain("'X-Token: s3cr3t'");
+  });
+
+  test("every generator resolves them", () => {
+    const req = request({ url: "https://{{host}}/x", headers: [kv("X-Token", "{{token}}")] });
+    for (const lang of ["fetch", "python-requests", "go", "httpie"] as const) {
+      const out = generateSnippet(resolveRequest(req, scope), lang);
+      expect(out, lang).not.toContain("{{");
+      expect(out, lang).toContain("api.example.com");
+    }
+  });
+
+  // A copied snippet goes to a clipboard, a chat window or a bug report, and a
+  // secret that leaves the vault that way cannot be called back.
+  test("a vault secret is left as a placeholder", () => {
+    const req = request({ headers: [kv("Authorization", "{{vaultKey}}")] });
+    expect(toCurl(resolveRequest(req, scope))).toContain("{{vaultKey}}");
   });
 });

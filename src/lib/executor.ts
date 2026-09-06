@@ -67,15 +67,7 @@ export async function executeRequest(
   };
 
   // 2. resolve variables and apply auth
-  const resolved: SignalRequest = {
-    ...original,
-    url: resolveVars(original.url, scope),
-    params: resolveKV(original.params, scope),
-    headers: resolveKV(original.headers, scope),
-    body: resolveBody(original.body, scope),
-    auth: resolveAuth(original.auth, scope),
-  };
-  const final = applyAuth(resolved);
+  const final = applyAuth(resolveRequest(original, scope));
 
   // 3. send via transport — serializeForProxy may auto-add Content-Type etc.;
   // fold those back into `final.headers` so consumers can see the actual
@@ -126,6 +118,24 @@ export async function executeRequest(
     envUpdates: { ...pre.setEnv, ...post.setEnv },
     globalUpdates: { ...pre.setGlobal, ...post.setGlobal },
     collectionUpdates: { ...pre.setCollection, ...post.setCollection },
+  };
+}
+
+/**
+ * Substitute {{variables}} throughout a request. Exported because the cURL
+ * command and code snippets shown to the user have to be built from the same
+ * substitution the sender performs — an exported command still carrying
+ * {{version}} in its URL is one real curl refuses to run at all ("nested brace
+ * in URL"), and one carrying {{token}} in a header sends that literal text.
+ */
+export function resolveRequest(req: SignalRequest, scope: VarScope): SignalRequest {
+  return {
+    ...req,
+    url: resolveVars(req.url, scope),
+    params: resolveKV(req.params, scope),
+    headers: resolveKV(req.headers, scope),
+    body: resolveBody(req.body, scope),
+    auth: resolveAuth(req.auth, scope),
   };
 }
 

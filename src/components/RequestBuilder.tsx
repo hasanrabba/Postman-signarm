@@ -4,12 +4,13 @@ import { useEffect, useMemo, useState, useCallback } from "react";
 import { useStore, type TabState } from "@/lib/store";
 import type { AuthType, BodyMode, Method, SignalRequest } from "@/lib/types";
 import { KVEditor } from "./KVEditor";
-import { executeRequest } from "@/lib/executor";
-import { parseCurl, toCurl } from "@/lib/curl";
+import { executeRequest, resolveRequest } from "@/lib/executor";
+import { parseCurl } from "@/lib/curl";
 import { generateSnippet, type SnippetLang } from "@/lib/snippets";
 import { uid } from "@/lib/id";
 import { redactRequest } from "@/lib/secrets";
 import { secretsAsVars } from "@/lib/vault";
+import type { VarScope } from "@/lib/variables";
 
 const METHODS: Method[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 const BODY_MODES: BodyMode[] = ["none", "json", "text", "xml", "form-urlencoded", "form-data", "graphql"];
@@ -199,7 +200,16 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
             hint={"sg.test('status is 200', () => sg.expect(sg.response.status).toBe(200));"}
           />
         )}
-        {activeTab === "snippets" && <SnippetsPanel request={draft} />}
+        {activeTab === "snippets" && (
+          <SnippetsPanel
+            request={draft}
+            scope={{
+              global: globals,
+              environment: activeEnvId ? environments[activeEnvId]?.variables : undefined,
+              collection: collection?.variables,
+            }}
+          />
+        )}
         {activeTab === "docs" && (
           <textarea
             className="input h-60 font-mono"
@@ -343,9 +353,18 @@ function ScriptEditor({ value, onChange, hint }: { value: string; onChange: (v: 
   );
 }
 
-function SnippetsPanel({ request }: { request: SignalRequest }) {
+function SnippetsPanel({ request, scope }: { request: SignalRequest; scope: VarScope }) {
   const [lang, setLang] = useState<SnippetLang>("curl");
-  const snippet = generateSnippet(request, lang);
+  // Generated from the resolved request, because a command still carrying
+  // {{version}} in its URL is one real curl refuses to run, and one carrying
+  // {{token}} in a header sends that literal text and comes back 401.
+  //
+  // Vault secrets are deliberately NOT in this scope: a copied snippet goes
+  // to a clipboard, a chat window or a bug report, and a secret that leaves
+  // the vault that way cannot be called back. They stay as placeholders.
+  const resolved = resolveRequest(request, scope);
+  const snippet = generateSnippet(resolved, lang);
+  const hasPlaceholder = /\{\{\s*[^}\s]+\s*\}\}/.test(snippet);
   return (
     <div className="space-y-2">
       <div className="flex gap-1 flex-wrap">
@@ -355,7 +374,13 @@ function SnippetsPanel({ request }: { request: SignalRequest }) {
         <button className="btn ml-auto" onClick={() => navigator.clipboard.writeText(snippet)}>Copy</button>
       </div>
       <pre className="input font-mono h-72 overflow-auto whitespace-pre-wrap">{snippet}</pre>
-      <div className="text-[11px] text-signal-muted">Tip: export any request as <code>{toCurl(request).slice(0, 40)}…</code> via the cURL tab.</div>
+      {hasPlaceholder && (
+        <div className="text-[11px] text-signal-err">
+          Still holds a {"{{placeholder}}"} — a vault secret, or a variable nothing defines. Fill it
+          in before running this: vault secrets are left out on purpose so a copied command cannot
+          carry one out of the vault.
+        </div>
+      )}
     </div>
   );
 }
