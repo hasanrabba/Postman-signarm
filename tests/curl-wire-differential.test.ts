@@ -21,6 +21,7 @@ import fs from "node:fs";
 
 const OUT = process.env.ECHO_OUT || "";
 const BASE = process.env.ECHO_BASE || "http://127.0.0.1:8899";
+const PORT = new URL(BASE).port;
 
 vi.mock("@/lib/transport", () => ({
   sendProxy: vi.fn((payload: { method: string; url: string; headers: Record<string, string>; body?: string }) =>
@@ -81,7 +82,7 @@ function normalize(r: Rec | null) {
 
 function viaCurl(cmd: string) {
   clear();
-  execFileSync("sh", ["-c", cmd], { stdio: "pipe" });
+  execFileSync("bash", ["-c", cmd], { stdio: "pipe" });
   return normalize(last());
 }
 
@@ -118,6 +119,20 @@ const CASES: [string, string][] = [
   ["semicolon in query", `curl '${BASE}/a?x=1;y=2'`],
   ["urlencoded content-type", `curl ${BASE}/a -H 'Content-Type: application/x-www-form-urlencoded' -d 'a=1&b=2'`],
   ["xml body", `curl ${BASE}/a -H 'Content-Type: application/xml' -d '<a>1</a>'`],
+  // flag and tokenizer fidelity
+  ["attached -X value", `curl -XPOST ${BASE}/a`],
+  ["attached -H value", `curl -H'X-A: 1' ${BASE}/a`],
+  ["a windows path in double quotes", `curl ${BASE}/a -d "C:\\temp\\news"`],
+  ["ansi-c body", `curl ${BASE}/a --data-raw $'line1\\nline2'`],
+  ["ansi-c header", `curl ${BASE}/a -H $'X-Trace: 1'`],
+  ["ansi-c url", `curl $'${BASE}/a'`],
+  ["--json", `curl --json '{"a":1}' ${BASE}/a`],
+  ["--oauth2-bearer", `curl --oauth2-bearer TOK123 ${BASE}/a`],
+  ["credentials in the url", `curl http://user:pass@127.0.0.1:${PORT}/a`],
+  ["a scheme-less host", `curl 127.0.0.1:${PORT}/a`],
+  ["an unknown no-arg flag before a scheme-less host", `curl -4 127.0.0.1:${PORT}/a`],
+  ["--data-raw keeps a leading @", `curl ${BASE}/a --data-raw '@channel deploy'`],
+  ["--form-string keeps a leading @", `curl ${BASE}/a --form-string 'x=@data.json'`],
 ];
 
 describe.skipIf(!OUT)("real curl vs Signal, on the wire", () => {
@@ -138,6 +153,34 @@ describe.skipIf(!OUT)("real curl vs Signal, on the wire", () => {
  * every hand-built form request to fix nothing a user can observe.
  */
 describe.skipIf(!OUT)("known divergences", () => {
+  /*
+   * A JSON-looking -d body with no Content-Type header: curl labels it
+   * application/x-www-form-urlencoded like every other -d body, Signal treats
+   * it as JSON. Deliberate — a real command that meant a form would not be
+   * carrying JSON — and pinned in tests/curl-import-fidelity.test.ts. The
+   * bytes of the body itself are identical.
+   */
+  for (const [name, cmd] of [
+    ["an attached -d JSON value", `curl -d'{"a":1}' ${BASE}/a`],
+    ["a JSON body quoted for the shell", `curl ${BASE}/a -d "{\\"text\\":\\"a\\nb\\"}"`],
+  ] as [string, string][]) {
+    test(name, async () => {
+      const { curl, signal } = await compare(cmd);
+      expect(curl!.headers["content-type"]).toBe("application/x-www-form-urlencoded");
+      expect(signal!.headers["content-type"]).toBe("application/json");
+      expect(signal!.body).toBe(curl!.body);
+      expect({ ...signal, headers: {} }).toEqual({ ...curl, headers: {} });
+    }, 20_000);
+  }
+
+  /*
+   * A non-ASCII header value cannot be compared here. curl puts the shell's
+   * UTF-8 bytes on the wire; this harness sends through node:http, which
+   * encodes header values as latin-1, so the difference measured would be the
+   * harness's, not Signal's. That $'X-Name: Caf\xc3\xa9' decodes to the
+   * characters "Café" is asserted in tests/curl-import-flags.test.ts instead.
+   */
+
   test("a space in a --data-urlencode body", async () => {
     const cmd = `curl ${BASE}/a --data-urlencode 'q=a b&c'`;
     const { curl, signal } = await compare(cmd);
