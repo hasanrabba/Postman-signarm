@@ -15,3 +15,6 @@ launcher/payload/*.exe
 launcher/payload/*.dll
 installer/staging
 installer/SignarmSignal-Setup.exe
+
+# QA sweep scratch: subagents write throwaway probes here
+tests/_probe_*
