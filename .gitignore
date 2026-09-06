@@ -18,3 +18,7 @@ installer/SignarmSignal-Setup.exe
 
 # QA sweep scratch: subagents write throwaway probes here
 tests/_probe_*
+
+# snippet execution harness scratch (cleaned up by the test, ignored if it dies)
+.snip-*
+.snipd-*

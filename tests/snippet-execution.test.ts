@@ -12,7 +12,7 @@
  *   ECHO_PORT=8899 ECHO_OUT=/tmp/echo.jsonl node tests/support/echo-server.cjs &
  *   ECHO_OUT=/tmp/echo.jsonl npx vitest run tests/snippet-execution.test.ts
  */
-import { describe, test, expect, vi } from "vitest";
+import { describe, test, expect, vi, afterAll } from "vitest";
 import { execFileSync } from "node:child_process";
 import http from "node:http";
 import fs from "node:fs";
@@ -110,6 +110,11 @@ function run(lang: SnippetLang, code: string) {
   }
   return shape(last());
 }
+
+afterAll(() => {
+  fs.rmSync(NODE_TMP, { recursive: true, force: true });
+  fs.rmSync(TMP, { recursive: true, force: true });
+});
 
 const kv = (key: string, value: string) => ({ id: key, key, value, enabled: true });
 const request = (over: Partial<SignalRequest>): SignalRequest => ({
