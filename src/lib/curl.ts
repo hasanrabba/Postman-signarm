@@ -2,7 +2,7 @@ import { uid } from "./id";
 import type { KeyValue, Method, SignalRequest } from "./types";
 import { base64Utf8, emptyAuth } from "./auth";
 import { autoFlagSecretsOnRequest } from "./secrets";
-import { appendQuery, splitFragment } from "./url";
+import { appendQuery, buildQuery, splitFragment } from "./url";
 import { shellArg } from "./shell";
 
 const METHODS: Method[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
@@ -278,16 +278,27 @@ export function parseCurl(cmd: string): SignalRequest | null {
   const [beforeHash, fragment] = splitFragment(url);
   const qStart = beforeHash.indexOf("?");
   if (qStart >= 0) {
-    url = beforeHash.slice(0, qStart) + fragment;
-    for (const pair of beforeHash.slice(qStart + 1).split("&")) {
+    const query = beforeHash.slice(qStart + 1);
+    const lifted: KeyValue[] = [];
+    for (const pair of query.split("&")) {
       if (!pair) continue;
       const [k, v] = splitOnce(pair, "=");
-      params.push({
+      lifted.push({
         id: uid("p"),
         key: safeDecode(k),
         value: safeDecode(v),
         enabled: true,
       });
+    }
+    // Lifting the query into the params table means rebuilding it from that
+    // table on every send, and the rebuild is not always what came in:
+    // `?q=a+b` went out as `?q=a%2Bb` (a literal plus where the command meant
+    // a space), `?flag` gained an `=`, and `?x=1;y=2` came back percent
+    // encoded. Only lift a query we can put back byte for byte; anything else
+    // stays on the URL, where it is passed through untouched.
+    if (buildQuery(lifted) === query) {
+      url = beforeHash.slice(0, qStart) + fragment;
+      params.push(...lifted);
     }
   }
 
@@ -372,11 +383,7 @@ function looksLikeJson(s: string): boolean {
 export function toCurl(req: SignalRequest): string {
   const parts: string[] = ["curl"];
   if (req.method !== "GET") parts.push(`-X ${req.method}`);
-  const q = req.params
-    .filter((p) => p.enabled && p.key)
-    .map((p) => `${encodeURIComponent(p.key)}=${encodeURIComponent(p.value)}`)
-    .join("&");
-  const url = appendQuery(req.url, q);
+  const url = appendQuery(req.url, buildQuery(req.params));
   parts.push(shellArg(url));
   for (const h of req.headers) {
     if (!h.enabled || !h.key) continue;

@@ -108,18 +108,20 @@ const CASES: [string, string][] = [
   ["chrome ansi-c body", String.raw`curl ${BASE}/a --data-raw $'line1\nline2'`],
   ["chrome ansi-c header", String.raw`curl ${BASE}/a -H $'X-Trace: 1'`],
   ["chrome ansi-c non-ascii", String.raw`curl ${BASE}/a -H $'X-Name: Caf\xc3\xa9'`],
+  ["chrome ansi-c url", String.raw`curl $'${BASE}/a'`],
   // A double-quoted argument: the shell keeps a backslash that is not before
   // $ ` " \ or newline. JSON escapes and Windows paths live here.
   ["json escape in double quotes", String.raw`curl ${BASE}/a -H 'Content-Type: application/json' -d "{\"text\":\"a\nb\"}"`],
   ["backslash-t in double quotes", String.raw`curl ${BASE}/a -H 'Content-Type: application/json' -d "{\"t\":\"a\tb\"}"`],
   ["windows path in double quotes", String.raw`curl ${BASE}/a -d "C:\temp\news"`],
+  // A backslash at end of line INSIDE a quoted body is not a continuation.
+  ["continuation inside quoted body", `curl ${BASE}/a -d 'echo hi \\\n echo bye'`],
   // Trailing shell comment.
   ["trailing # comment", `curl ${BASE}/a # -H 'X-Debug: 1'`],
   // --- controls: these should already agree, and do ---
   ["ctl escaped apostrophe idiom", String.raw`curl ${BASE}/a -d 'it'\''s'`],
   ["ctl multiline quoted body", `curl ${BASE}/a -H 'Content-Type: application/json' -d '{\n  "a": 1\n}'`],
   ["ctl tabs as separators", `curl\t${BASE}/a\t-H\t'X-A: 1'`],
-  ["ctl crlf continuation", `curl ${BASE}/a \\\r\n  -H 'X-A: 1'`],
   ["ctl escaped quotes in double quotes", String.raw`curl ${BASE}/a -H 'Content-Type: application/json' -d "{\"a\":\"b\"}"`],
   ["ctl backslash-escaped space", String.raw`curl ${BASE}/a -H X-A:\ 1`],
   ["ctl adjacent quoting", `curl ${BASE}/a -H 'X-A: '"1"''`],
@@ -129,6 +131,7 @@ describe("tokenizer: real curl (bash) vs Signal, on the wire", () => {
   for (const [name, cmd] of CASES) {
     test(name, async () => {
       const { curl, signal } = await compare(cmd);
+      console.log(`[wire] ${name}\n  cmd    ${JSON.stringify(cmd)}\n  curl   ${JSON.stringify(curl)}\n  signal ${JSON.stringify(signal)}`);
       expect({ name, ...signal }).toEqual({ name, ...curl });
     }, 20_000);
   }
@@ -144,6 +147,12 @@ describe("tokenizer: pastes that never reach a shell", () => {
     expect(parseCurl(`$ curl ${BASE}/a`), "$ prompt").not.toBeNull();
     expect(parseCurl(`# curl ${BASE}/a`), "# root prompt").not.toBeNull();
     expect(parseCurl(`> curl ${BASE}/a`), "> continuation prompt").not.toBeNull();
+  });
+
+  test("$'...' around the URL does not corrupt it", () => {
+    // Chrome uses $'...' for any argument with a non-ASCII byte, the URL included.
+    const r = parseCurl(String.raw`curl $'${BASE}/a'`)!;
+    expect(r.url).toBe(`${BASE}/a`);
   });
 
   test("a leading comment line still imports", () => {
@@ -185,6 +194,12 @@ describe("tokenizer: pastes that never reach a shell", () => {
     expect(() => parseCurl(`curl ${BASE}/a -H`)).not.toThrow();
     expect(() => parseCurl(`curl ${BASE}/a -F`)).not.toThrow();
     expect(() => parseCurl(`curl ${BASE}/a --data-urlencode`)).not.toThrow();
+  });
+
+  test("CRLF line continuations parse (bash itself rejects these)", () => {
+    const r = parseCurl(`curl ${BASE}/a \\\r\n  -H 'X-A: 1'`)!;
+    expect(r.url).toBe(`${BASE}/a`);
+    expect(r.headers.map((h) => `${h.key}: ${h.value}`)).toEqual(["X-A: 1"]);
   });
 
   test("a truncated -d does not send the string 'undefined'", () => {

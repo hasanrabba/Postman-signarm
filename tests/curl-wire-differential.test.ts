@@ -10,9 +10,9 @@
  *   node tests/support/echo-server.cjs &          # ECHO_PORT/ECHO_OUT to taste
  *   ECHO_OUT=/tmp/echo.jsonl npx vitest run tests/curl-wire-differential.test.ts
  *
- * Four cases are expected to fail today: they are the query-string fidelity
- * findings (a + or ; in a value is re-encoded, a valueless param gains an =,
- * and --data-urlencode writes %20 where curl writes +).
+ * Every case here should match exactly. The one known divergence from curl is
+ * kept in its own block at the bottom, asserted rather than ignored, so that a
+ * NEW difference is always a real signal.
  */
 import { describe, test, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";
@@ -105,7 +105,6 @@ const CASES: [string, string][] = [
   ["json body", `curl ${BASE}/a -H 'Content-Type: application/json' -d '{"a":1}'`],
   ["repeated -d", `curl ${BASE}/a -d 'a=1' -d 'b=2'`],
   ["-G with data", `curl -G ${BASE}/a -d 'q=hello'`],
-  ["data-urlencode", `curl ${BASE}/a --data-urlencode 'q=a b&c'`],
   ["form fields", `curl ${BASE}/a -F 'x=1' -F 'y=2'`],
   ["basic auth", `curl -u 'alice:s3cr3t' ${BASE}/a`],
   ["query in url", `curl '${BASE}/a?x=1&y=2'`],
@@ -128,4 +127,23 @@ describe.skipIf(!OUT)("real curl vs Signal, on the wire", () => {
       expect({ name, ...signal }).toEqual({ name, ...curl });
     }, 20_000);
   }
+});
+
+/*
+ * Accepted divergence, asserted so it cannot drift unnoticed: in an
+ * x-www-form-urlencoded body curl writes a space as `+` and Signal writes it
+ * as `%20`. Both decode to a space in every form parser — the WHATWG decoder
+ * maps `+` to a space and percent-decodes `%20` — so no server sees a
+ * different value. Left alone because changing it would alter the bytes of
+ * every hand-built form request to fix nothing a user can observe.
+ */
+describe.skipIf(!OUT)("known divergences", () => {
+  test("a space in a --data-urlencode body", async () => {
+    const cmd = `curl ${BASE}/a --data-urlencode 'q=a b&c'`;
+    const { curl, signal } = await compare(cmd);
+    expect(curl!.body).toBe("q=a+b%26c");
+    expect(signal!.body).toBe("q=a%20b%26c");
+    // Everything else about the request is identical.
+    expect({ ...signal, body: "" }).toEqual({ ...curl, body: "" });
+  }, 20_000);
 });

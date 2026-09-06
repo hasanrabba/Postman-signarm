@@ -1,7 +1,7 @@
 import type { SignalRequest } from "./types";
 import { applyAuth } from "./auth";
 import { toCurl } from "./curl";
-import { appendQuery } from "./url";
+import { appendQuery, buildQuery } from "./url";
 import { shellArg } from "./shell";
 
 export type SnippetLang = "curl" | "fetch" | "node-fetch" | "python-requests" | "go" | "httpie";
@@ -49,9 +49,7 @@ function formFields(req: SignalRequest) {
 }
 
 function urlWithQuery(req: SignalRequest): string {
-  const q = req.params.filter((p) => p.enabled && p.key)
-    .map((p) => `${encodeURIComponent(p.key)}=${encodeURIComponent(p.value)}`).join("&");
-  return appendQuery(req.url, q);
+  return appendQuery(req.url, buildQuery(req.params));
 }
 
 function fetchSnippet(req: SignalRequest, node = false): string {

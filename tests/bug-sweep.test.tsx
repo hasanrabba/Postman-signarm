@@ -32,7 +32,11 @@ describe("cURL import", () => {
   test("survives a malformed percent-escape instead of throwing", () => {
     const r = parseCurl("curl 'https://x.example.com/?bad=%zz'");
     expect(r).not.toBeNull();
-    expect(r!.params[0].value).toBe("%zz");
+    // An escape we cannot decode is not lifted into the params table, because
+    // rebuilding the query from there would send `bad=%25zz`. It stays on the
+    // URL, where it goes out exactly as curl would have sent it.
+    expect(r!.url).toBe("https://x.example.com/?bad=%zz");
+    expect(r!.params).toEqual([]);
   });
 
   test("-u without a password still sends a colon", () => {

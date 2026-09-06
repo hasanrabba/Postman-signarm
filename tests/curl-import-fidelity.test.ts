@@ -92,3 +92,35 @@ describe("-G sends no body and so no Content-Type", () => {
     expect(w.body).toBeUndefined();
   });
 });
+
+/* An imported request must put the query on the wire the way curl did. The
+   query used to be lifted into the params table unconditionally and rebuilt
+   from there on every send, which rewrote it. */
+describe("the query survives import byte for byte", () => {
+  const cases: [string, string][] = [
+    ["a plus means a space to a form parser", "http://x.test/a?q=a+b"],
+    ["a valueless param has no equals sign", "http://x.test/a?flag&y=2"],
+    ["a semicolon is legal in a value", "http://x.test/a?x=1;y=2"],
+    ["an undecodable escape is passed through", "http://x.test/a?bad=%zz"],
+    ["a second equals stays in the value", "http://x.test/a?sig=abc=def&b=1"],
+    ["a second question mark stays in the value", "http://x.test/a?b=1?2"],
+    ["an already-encoded space stays encoded", "http://x.test/a?q=a%20b"],
+    ["an ordinary query is unchanged", "http://x.test/a?x=1&y=2"],
+  ];
+  for (const [name, url] of cases) {
+    test(name, async () => expect((await wire(`curl '${url}'`)).url).toBe(url));
+  }
+});
+
+/* Whatever the app sends, the cURL command and code snippets it shows for the
+   same request must send too — three copies of this had drifted before. */
+describe("what is exported matches what is sent", () => {
+  test("an equals in a param value is not re-encoded on export", async () => {
+    const { toCurl } = await import("@/lib/curl");
+    const { generateSnippet } = await import("@/lib/snippets");
+    const req = parseCurl("curl 'http://x.test/a?sig=abc=def'")!;
+    const onTheWire = (await wire("curl 'http://x.test/a?sig=abc=def'")).url;
+    expect(toCurl(req)).toContain(onTheWire);
+    expect(generateSnippet(req, "python-requests")).toContain(onTheWire);
+  });
+});

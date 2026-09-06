@@ -3,7 +3,7 @@ import { applyAuth } from "./auth";
 import { resolveKV, resolveVars, type VarScope } from "./variables";
 import { runScript } from "./scripting";
 import { sendProxy } from "./transport";
-import { appendQuery } from "./url";
+import { appendQuery, buildQuery } from "./url";
 
 function resolveAuth(auth: Auth, scope: VarScope): Auth {
   const r = (s?: string) => (s === undefined ? s : resolveVars(s, scope));
@@ -250,9 +250,7 @@ function mergeHeadersInto(req: SignalRequest, actual: Record<string, string>): v
 }
 
 function buildUrl(req: SignalRequest): string {
-  const q = req.params.filter((p) => p.enabled && p.key)
-    .map((p) => `${encodeURIComponent(p.key)}=${encodeURIComponent(p.value)}`).join("&");
-  return appendQuery(req.url, q);
+  return appendQuery(req.url, buildQuery(req.params));
 }
 
 function toKV(table: Record<string, string>): KeyValue[] {
