@@ -116,6 +116,8 @@ export function parseCurl(cmd: string): SignalRequest | null {
   let isUrlEncoded = false;
   let basicUser: string | undefined;
   let getWithData = false;
+  let headOnly = false;
+  let dataFlag = false;
 
   const addHeader = (raw: string) => {
     const colon = raw.indexOf(":");
@@ -141,6 +143,7 @@ export function parseCurl(cmd: string): SignalRequest | null {
       case "-d": case "--data": case "--data-raw": case "--data-binary": case "--data-ascii": {
         let v = next();
         if (v && v.startsWith("@")) v = `[file:${v.slice(1)}]`;
+        dataFlag = true;
         bodyRaw += (bodyRaw ? "&" : "") + v;
         bodyMode = "text";
         if (!explicitMethod) method = "POST";
@@ -206,12 +209,18 @@ export function parseCurl(cmd: string): SignalRequest | null {
       case "-G": case "--get":
         method = "GET"; explicitMethod = true; getWithData = true;
         break;
+      // `curl -I` asks for headers only. It imported as a GET, so the
+      // request downloaded the whole body it was meant to skip. `-X` still
+      // wins, whichever order the two appear in, as it does in real curl.
+      case "-I": case "--head":
+        headOnly = true;
+        break;
       // no-arg flags we can safely ignore
       case "--compressed": case "-L": case "--location":
       case "-k": case "--insecure": case "-s": case "--silent":
       case "-S": case "--show-error": case "-i": case "--include":
       case "-v": case "--verbose": case "-j": case "--junk-session-cookies":
-      case "-I": case "--head": case "-f": case "--fail":
+      case "-f": case "--fail":
       case "-N": case "--no-buffer":
         break;
       default:
@@ -233,6 +242,8 @@ export function parseCurl(cmd: string): SignalRequest | null {
     }
   }
 
+  if (headOnly && !explicitMethod) method = "HEAD";
+
   if (basicUser) {
     // `curl -u alice` prompts for a password and sends `alice:`; without the
     // colon the header decodes to a username with no separator, which every
@@ -249,10 +260,17 @@ export function parseCurl(cmd: string): SignalRequest | null {
   if (bodyRaw && bodyMode !== "form-data") {
     const lowerCt = ct.toLowerCase();
     if (lowerCt.includes("application/json")) bodyMode = "json";
-    else if (lowerCt.includes("application/x-www-form-urlencoded") || isUrlEncoded) bodyMode = "form-urlencoded";
+    else if (lowerCt.includes("application/x-www-form-urlencoded") || isUrlEncoded) {
+      // Showing a body as key/value rows means re-serialising it from those
+      // rows on every send. `-d 'plaintext'` is not a form, and came back out
+      // as `plaintext=`; a body that is not made of named fields stays raw
+      // text so its bytes go out the way curl sent them.
+      bodyMode = looksLikeForm(bodyRaw) ? "form-urlencoded" : "text";
+    }
     else if (looksLikeJson(bodyRaw)) bodyMode = "json";
     else if (/^<\?xml|^<[a-zA-Z]/.test(bodyRaw.trim())) bodyMode = "xml";
   }
+
 
   // Extract query params from URL. The fragment is not part of the query —
   // splitting on "?" alone left the last param holding "1#section" — and
@@ -286,6 +304,21 @@ export function parseCurl(cmd: string): SignalRequest | null {
     isUrlEncoded = false;
   }
 
+  // Real curl labels every -d body `application/x-www-form-urlencoded`,
+  // whatever it holds. Signal sent no Content-Type at all, so a server that
+  // dispatches on it saw an imported request arrive with none. Never over a
+  // header the command set for itself, never over a detected mode that brings
+  // its own type, and never on `-G`, which by now has moved the data into the
+  // query string and has no body left to label.
+  if (dataFlag && bodyRaw && bodyMode === "text" && !ct) {
+    headers.push({
+      id: uid("h"),
+      key: "Content-Type",
+      value: "application/x-www-form-urlencoded",
+      enabled: true,
+    });
+  }
+
   const urlencoded: KeyValue[] = bodyMode === "form-urlencoded"
     ? bodyRaw.split("&").filter(Boolean).map((p) => {
         const [k, v] = splitOnce(p, "=");
@@ -316,6 +349,18 @@ export function parseCurl(cmd: string): SignalRequest | null {
     preRequestScript: "",
     testScript: "",
   });
+}
+
+/**
+ * Is every `&`-separated segment actually a named field? `-d 'plaintext'` is
+ * not a form, and rendering it as key/value rows means re-serialising it as
+ * `plaintext=` on every send — which is not what curl put on the wire.
+ * A second `=` inside a value is fine: `jwt=a.b=c` re-encodes to
+ * `jwt=a.b%3Dc`, which every form parser decodes back to the same pair.
+ */
+function looksLikeForm(raw: string): boolean {
+  const pairs = raw.split("&").filter(Boolean);
+  return pairs.length > 0 && pairs.every((p) => p.includes("=") && !p.startsWith("="));
 }
 
 function looksLikeJson(s: string): boolean {
