@@ -261,3 +261,17 @@ describe("the second sweep", () => {
     expect(out).toContain("X-Trace: abc X-Injected: yes");
   });
 });
+
+/* The URL parser strips whitespace around a URL, so the app sends /a for
+   "http://h/a ". Encoding it into the path instead produced "%20http://h/a". */
+describe("whitespace around the URL", () => {
+  test("a trailing space is dropped, not encoded", () =>
+    expect(toCurl(request({ url: "http://x.test/a " }))).toContain("http://x.test/a"));
+  test("a leading space does not corrupt the scheme", () => {
+    const out = toCurl(request({ url: " http://x.test/a" }));
+    expect(out).not.toContain("%20http");
+    expect(out).toContain("http://x.test/a");
+  });
+  test("a space inside the path is still encoded", () =>
+    expect(toCurl(request({ url: "http://x.test/a b" }))).toContain("/a%20b"));
+});

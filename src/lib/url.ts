@@ -7,8 +7,13 @@
  * snippet generators — so it lives here now.
  */
 export function appendQuery(url: string, query: string): string {
-  if (!query) return url;
-  const [base, fragment] = splitFragment(url);
+  // Whitespace around a URL is not part of it — the URL parser strips it, so
+  // the app sends /a for "http://h/a ". The exporter used to encode it into
+  // the path instead, and a leading space produced "%20http://h/a", which is
+  // not a URL at all.
+  const trimmed = url.trim();
+  if (!query) return trimmed;
+  const [base, fragment] = splitFragment(trimmed);
   return `${base}${base.includes("?") ? "&" : "?"}${query}${fragment}`;
 }
 
