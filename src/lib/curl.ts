@@ -3,7 +3,7 @@ import type { KeyValue, Method, SignalRequest } from "./types";
 import { base64Utf8, emptyAuth } from "./auth";
 import { autoFlagSecretsOnRequest } from "./secrets";
 import { appendQuery, buildQuery, splitFragment } from "./url";
-import { defaultContentType } from "./executor";
+import { defaultContentType, headerValue } from "./executor";
 import { shellArg } from "./shell";
 
 const METHODS: Method[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
@@ -701,9 +701,10 @@ export function toCurl(req: SignalRequest): string {
     // key used to close the string early and mangle the whole command.
     // `-H 'X: '` makes curl DROP the header rather than send it empty; the
     // trailing-semicolon spelling is the one that sends it.
-    parts.push(h.value === ""
+    const value = headerValue(h.value);
+    parts.push(value === ""
       ? `-H ${shellArg(`${h.key};`)}`
-      : `-H ${shellArg(`${h.key}: ${h.value}`)}`);
+      : `-H ${shellArg(`${h.key}: ${value}`)}`);
   }
   const b = req.body;
   // curl sets its own type for -F and --data-urlencode; everything else has to
@@ -716,11 +717,12 @@ export function toCurl(req: SignalRequest): string {
   if (b.mode === "json" || b.mode === "text" || b.mode === "xml") {
     if (b.raw) parts.push(`--data-raw ${shellArg(b.raw)}`);
   } else if (b.mode === "form-urlencoded" && b.urlencoded) {
-    for (const kv of b.urlencoded) {
-      if (kv.enabled && kv.key) {
-        parts.push(`--data-urlencode ${shellArg(`${kv.key}=${kv.value}`)}`);
-      }
-    }
+    // Not `--data-urlencode` per field: curl encodes a space as `+` where the
+    // app encodes it as `%20`, so the exported command put different bytes on
+    // the wire than the request it was copied from. The body is already
+    // encoded, and curl labels a --data-raw body as form data by itself.
+    const encoded = buildQuery(b.urlencoded);
+    if (encoded) parts.push(`--data-raw ${shellArg(encoded)}`);
   } else if (b.mode === "form-data" && b.formdata) {
     for (const kv of b.formdata) {
       if (!kv.enabled || !kv.key) continue;

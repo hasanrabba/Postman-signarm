@@ -2,7 +2,7 @@ import type { SignalRequest } from "./types";
 import { applyAuth } from "./auth";
 import { toCurl } from "./curl";
 import { appendQuery, buildQuery } from "./url";
-import { defaultContentType } from "./executor";
+import { defaultContentType, headerValue } from "./executor";
 import { shellArg } from "./shell";
 
 export type SnippetLang = "curl" | "fetch" | "node-fetch" | "python-requests" | "go" | "httpie";
@@ -56,7 +56,7 @@ function formFields(req: SignalRequest) {
  */
 function snippetHeaders(req: SignalRequest, multipart: boolean): Record<string, string> {
   const headers: Record<string, string> = {};
-  for (const h of req.headers) if (h.enabled && h.key) headers[h.key] = h.value;
+  for (const h of req.headers) if (h.enabled && h.key) headers[h.key] = headerValue(h.value);
   if (multipart) {
     delete headers[Object.keys(headers).find((k) => k.toLowerCase() === "content-type") ?? ""];
     return headers;
@@ -180,8 +180,19 @@ function goSnippet(req: SignalRequest): string {
 
 function httpieSnippet(req: SignalRequest): string {
   const fields = formFields(req);
+  const body = fields ? undefined : bodyString(req);
   const parts: string[] = ["http"];
-  if (fields) parts.push("--form");
+  // Without this, HTTPie sees a non-tty stdin and refuses to mix it with
+  // key=value items: run from a script or a CI job rather than typed at a
+  // terminal, the snippet died with a usage error. Only the piped-body form
+  // below actually wants stdin.
+  if (!body) parts.push("--ignore-stdin");
+  // `--form` means form-URLENCODED to HTTPie, not multipart: a form-data
+  // request exported as `--form` arrived at the server as
+  // application/x-www-form-urlencoded with a completely different body, which
+  // any endpoint expecting an upload rejects. `--multipart` is the flag that
+  // means what this body mode means.
+  if (fields) parts.push("--multipart");
   parts.push(req.method, shellArg(urlWithQuery(req)));
   // HTTPie derives the multipart boundary itself.
   for (const [k, v] of Object.entries(snippetHeaders(req, Boolean(fields)))) {
@@ -195,8 +206,14 @@ function httpieSnippet(req: SignalRequest): string {
     }
     return parts.join(" ");
   }
-  const body = bodyString(req);
-  // A here-string has to precede the command's stdin, not trail its args.
-  if (body) return `echo ${JSON.stringify(body)} | ${parts.join(" ")}`;
+  // The body has to precede the command's stdin, not trail its args.
+  //
+  // `echo "..."` was doing two things wrong. It appends a newline, so every
+  // body arrived one byte longer than the app sends — enough to break a signed
+  // or hashed payload. And a double-quoted shell string still expands `$` and
+  // backticks: a body holding `id -u` in backticks RAN that command and put its
+  // output on the wire. printf writes the bytes exactly, and single quotes stop
+  // the shell reading any of it.
+  if (body) return `printf '%s' ${shellArg(body)} | ${parts.join(" ")}`;
   return parts.join(" ");
 }

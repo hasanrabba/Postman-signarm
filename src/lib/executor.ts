@@ -201,10 +201,10 @@ function serializeForProxy(req: SignalRequest) {
     if (!h.enabled || !h.key) continue;
     const existing = Object.keys(headers).find((k) => k.toLowerCase() === h.key.toLowerCase());
     if (existing === undefined) {
-      headers[h.key] = h.value;
+      headers[h.key] = headerValue(h.value);
     } else {
       const sep = existing.toLowerCase() === "cookie" ? "; " : ", ";
-      headers[existing] = `${headers[existing]}${sep}${h.value}`;
+      headers[existing] = `${headers[existing]}${sep}${headerValue(h.value)}`;
     }
   }
   let body: string | undefined;
@@ -264,6 +264,17 @@ function mergeHeadersInto(req: SignalRequest, actual: Record<string, string>): v
  * multipart is absent on purpose: its type carries a boundary, and every
  * client generates its own.
  */
+/**
+ * Leading and trailing spaces are not part of a header's value — RFC 9110
+ * calls them optional whitespace and every parser strips them — so a value
+ * typed with one made no difference on the wire. It did break the generated
+ * code: python's requests refuses a value with leading whitespace outright
+ * ("InvalidHeader"), so the copied snippet raised instead of sending.
+ */
+export function headerValue(v: string): string {
+  return v.trim();
+}
+
 export function defaultContentType(mode: SignalRequest["body"]["mode"]): string | undefined {
   switch (mode) {
     case "json": case "graphql": return "application/json";
