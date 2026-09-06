@@ -86,3 +86,87 @@ describe("a padded header value is trimmed", () => {
     });
   }
 });
+
+/* Found by the sweep, each confirmed against real curl 8.5.0 or the app's own
+   sender before being fixed. */
+describe("what the sweep turned up", () => {
+  test("a lone surrogate in a param does not take the app down", () => {
+    // Half an emoji is what a truncated paste leaves behind, and
+    // encodeURIComponent throws URIError on it — which threw while the
+    // Snippets panel was rendering and whited out the whole app.
+    const r = request({ params: [kv("q", "hi \uD83D")] });
+    for (const lang of ["curl", "fetch", "node-fetch", "python-requests", "go", "httpie"] as const) {
+      expect(() => generateSnippet(r, lang), lang).not.toThrow();
+    }
+    expect(toCurl(r)).toContain("q=hi%20%EF%BF%BD");
+  });
+
+  test("two rows with the same header name both survive into the snippet", () => {
+    const r = request({ headers: [kv("X-A", "one"), { id: "2", key: "X-A", value: "two", enabled: true }] });
+    for (const lang of ["fetch", "node-fetch", "python-requests", "go", "httpie"] as const) {
+      expect(generateSnippet(r, lang), lang).toContain("one, two");
+    }
+    // curl carries them as two -H lines, which a server joins the same way.
+    expect(toCurl(r)).toContain("'X-A: one'");
+    expect(toCurl(r)).toContain("'X-A: two'");
+  });
+
+  test("two Cookie rows are joined with a semicolon", () => {
+    const r = request({ headers: [kv("Cookie", "a=1"), { id: "2", key: "Cookie", value: "b=2", enabled: true }] });
+    expect(generateSnippet(r, "python-requests")).toContain("a=1; b=2");
+  });
+
+  test("a GET that carries a body still exports as a GET", () => {
+    // Any data flag makes curl default to POST.
+    const r = request({ method: "GET", body: { mode: "json", raw: '{"a":1}', urlencoded: [], formdata: [], graphql: { query: "", variables: "" } } as never });
+    expect(toCurl(r)).toContain("-X GET");
+  });
+
+  test("a GET with no body does not gain a redundant -X", () =>
+    expect(toCurl(request({}))).not.toContain("-X GET"));
+
+  test("a form text value starting with @ is not read off the user's disk", () => {
+    const r = request({ method: "POST", body: { mode: "form-data", raw: "", urlencoded: [],
+      formdata: [{ ...kv("msg", "@channel deploy is green"), type: "text" as const }],
+      graphql: { query: "", variables: "" } } as never });
+    // `-F` made curl try to open a file called "channel deploy is green",
+    // fail, and send nothing at all.
+    expect(toCurl(r)).toContain("--form-string 'msg=@channel deploy is green'");
+  });
+
+  test("a file field still uses -F", () => {
+    const r = request({ method: "POST", body: { mode: "form-data", raw: "", urlencoded: [],
+      formdata: [{ ...kv("f", ""), type: "file" as const, fileName: "a.bin" }],
+      graphql: { query: "", variables: "" } } as never });
+    expect(toCurl(r)).toContain("-F f=@a.bin");
+  });
+});
+
+/* HTTPie reads the first separator it finds: `=` a data field, `:` a header,
+   `==` a query parameter, `:=` raw JSON, `=@` a FILE off disk. */
+describe("httpie request items are escaped", () => {
+  test("a form value starting with @ is not read off disk", () => {
+    const r = request({ method: "POST", body: { mode: "form-data", raw: "", urlencoded: [],
+      formdata: [{ ...kv("msg", "@channel deploy"), type: "text" as const }],
+      graphql: { query: "", variables: "" } } as never });
+    expect(generateSnippet(r, "httpie")).toContain("msg=\\@channel deploy");
+  });
+
+  test("a header value starting with = does not become a JSON body", () =>
+    expect(generateSnippet(request({ headers: [kv("X-Expr", "=1+1")] }), "httpie"))
+      .toContain("X-Expr:\\=1+1"));
+
+  test("a field name holding a separator is escaped", () => {
+    const r = request({ method: "POST", body: { mode: "form-data", raw: "", urlencoded: [],
+      formdata: [{ ...kv("a:b", "1"), type: "text" as const }],
+      graphql: { query: "", variables: "" } } as never });
+    expect(generateSnippet(r, "httpie")).toContain("a\\:b=1");
+  });
+
+  test("an empty header uses the spelling that sends it", () =>
+    expect(generateSnippet(request({ headers: [kv("X-Trace", "")] }), "httpie"))
+      .toContain("X-Trace;"));
+
+  test("an ordinary header is untouched", () =>
+    expect(generateSnippet(request({ headers: [kv("X-A", "1")] }), "httpie")).toContain("X-A:1"));
+});

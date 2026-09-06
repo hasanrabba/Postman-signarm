@@ -33,16 +33,30 @@ export function splitFragment(url: string): [string, string] {
 const QUERY_SAFE: Record<string, string> = {
   "3D": "=", "3F": "?", "2F": "/", "3A": ":", "40": "@", "2C": ",", "24": "$", "3B": ";",
 };
+/**
+ * A lone surrogate — half an emoji, which is exactly what a truncated paste or
+ * a sliced string leaves behind — has no UTF-8 encoding, and encodeURIComponent
+ * throws URIError on it. That threw while the Snippets panel was rendering and
+ * took the whole app down to a white screen, sidebar and all, and it threw on
+ * the send path too. U+FFFD is what every other encoder substitutes.
+ */
+export function toWellFormed(v: string): string {
+  return v.replace(
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
+    "\uFFFD"
+  );
+}
+
 export function encodeQueryValue(v: string): string {
   // Every %XX in the output was produced by encodeURIComponent — a literal
   // percent is already %25 — so this cannot rewrite the user's own text.
-  return encodeURIComponent(v).replace(/%(3D|3F|2F|3A|40|2C|24|3B)/g, (_, h) => QUERY_SAFE[h]);
+  return encodeURIComponent(toWellFormed(v)).replace(/%(3D|3F|2F|3A|40|2C|24|3B)/g, (_, h) => QUERY_SAFE[h]);
 }
 
 /** The query string a request's param rows produce. */
 export function buildQuery(rows: { key: string; value: string; enabled: boolean }[]): string {
   return rows
     .filter((p) => p.enabled && p.key)
-    .map((p) => `${encodeURIComponent(p.key)}=${encodeQueryValue(p.value)}`)
+    .map((p) => `${encodeURIComponent(toWellFormed(p.key))}=${encodeQueryValue(p.value)}`)
     .join("&");
 }

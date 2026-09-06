@@ -686,11 +686,20 @@ function looksLikeJson(s: string): boolean {
 
 export function toCurl(req: SignalRequest): string {
   const parts: string[] = ["curl"];
+  const b = req.body;
+  // Any data flag makes curl default to POST, so a GET that carries a body —
+  // which this app allows and some search APIs require — exported as a command
+  // that silently sent a POST. Say the method explicitly whenever there is one.
+  const carriesBody =
+    ((b.mode === "json" || b.mode === "text" || b.mode === "xml") && Boolean(b.raw)) ||
+    (b.mode === "form-urlencoded" && buildQuery(b.urlencoded ?? []) !== "") ||
+    (b.mode === "form-data" && (b.formdata ?? []).some((f) => f.enabled && f.key)) ||
+    b.mode === "graphql";
   // `-X HEAD` makes curl wait for a body that a HEAD response never sends, so
   // the exported command sat there until the user killed it. `-I` is the
   // spelling that works.
   if (req.method === "HEAD") parts.push("-I");
-  else if (req.method !== "GET") parts.push(`-X ${req.method}`);
+  else if (req.method !== "GET" || carriesBody) parts.push(`-X ${req.method}`);
   const url = appendQuery(req.url, buildQuery(req.params));
   parts.push(shellArg(url));
   let hasContentType = false;
@@ -706,7 +715,6 @@ export function toCurl(req: SignalRequest): string {
       ? `-H ${shellArg(`${h.key};`)}`
       : `-H ${shellArg(`${h.key}: ${value}`)}`);
   }
-  const b = req.body;
   // curl sets its own type for -F and --data-urlencode; everything else has to
   // carry the type the app would have sent, or the command means something
   // different from the request it was copied from.
@@ -726,8 +734,12 @@ export function toCurl(req: SignalRequest): string {
   } else if (b.mode === "form-data" && b.formdata) {
     for (const kv of b.formdata) {
       if (!kv.enabled || !kv.key) continue;
+      // `--form-string` for a text field, because `-F` reads a leading `@` as a
+      // path and a `;type=` as multipart syntax: a field holding
+      // "@channel deploy is green" made curl try to open a file called
+      // "channel deploy is green", fail, and send nothing at all.
       if (kv.type === "file") parts.push(`-F ${shellArg(`${kv.key}=@${kv.fileName ?? ""}`)}`);
-      else parts.push(`-F ${shellArg(`${kv.key}=${kv.value}`)}`);
+      else parts.push(`--form-string ${shellArg(`${kv.key}=${kv.value}`)}`);
     }
   } else if (b.mode === "graphql" && b.graphql) {
     const payload = JSON.stringify({

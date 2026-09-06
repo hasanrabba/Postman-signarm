@@ -2,7 +2,7 @@ import type { SignalRequest } from "./types";
 import { applyAuth } from "./auth";
 import { toCurl } from "./curl";
 import { appendQuery, buildQuery } from "./url";
-import { defaultContentType, headerValue } from "./executor";
+import { combineHeaders, defaultContentType } from "./executor";
 import { shellArg } from "./shell";
 
 export type SnippetLang = "curl" | "fetch" | "node-fetch" | "python-requests" | "go" | "httpie";
@@ -55,8 +55,10 @@ function formFields(req: SignalRequest) {
  * Multipart is left out: every client generates its own boundary.
  */
 function snippetHeaders(req: SignalRequest, multipart: boolean): Record<string, string> {
-  const headers: Record<string, string> = {};
-  for (const h of req.headers) if (h.enabled && h.key) headers[h.key] = headerValue(h.value);
+  // Built the same way the sender builds it: a map keyed by name kept only
+  // the LAST of two rows sharing a name, so a second Cookie or a second
+  // Authorization vanished from the copied code.
+  const headers = combineHeaders(req.headers);
   if (multipart) {
     delete headers[Object.keys(headers).find((k) => k.toLowerCase() === "content-type") ?? ""];
     return headers;
@@ -178,6 +180,25 @@ function goSnippet(req: SignalRequest): string {
   return lines.filter(Boolean).join("\n");
 }
 
+/**
+ * HTTPie decides what a request item means from the first separator it finds:
+ * `=` is a data field, `:` a header, `==` a query parameter, `:=` embeds raw
+ * JSON, and `=@` reads a FILE off disk. So a name holding one of those
+ * characters, or a value starting with one, silently changed the request —
+ * a form field holding "@channel deploy is green" made HTTPie try to open a
+ * file called "channel deploy is green" and refuse to run at all, and a header
+ * value starting with `=` turned into a JSON body. A backslash escapes them.
+ *
+ * An empty value is its own case: `Name:` tells HTTPie to REMOVE the header,
+ * and `Name;` is the spelling that sends it empty — the same trap curl has.
+ */
+function httpieItem(name: string, sep: string, value: string): string {
+  const n = name.replace(/([\\=:@])/g, "\\$1");
+  if (sep === ":" && value === "") return `${n};`;
+  const v = value.replace(/^([@=:])/, "\\$1");
+  return `${n}${sep}${v}`;
+}
+
 function httpieSnippet(req: SignalRequest): string {
   const fields = formFields(req);
   const body = fields ? undefined : bodyString(req);
@@ -196,12 +217,14 @@ function httpieSnippet(req: SignalRequest): string {
   parts.push(req.method, shellArg(urlWithQuery(req)));
   // HTTPie derives the multipart boundary itself.
   for (const [k, v] of Object.entries(snippetHeaders(req, Boolean(fields)))) {
-    parts.push(shellArg(`${k}:${v}`));
+    parts.push(shellArg(httpieItem(k, ":", v)));
   }
   if (fields) {
     for (const f of fields) {
       parts.push(shellArg(
-        f.type === "file" ? `${f.key}@${f.fileName ?? "file.bin"}` : `${f.key}=${f.value}`
+        f.type === "file"
+          ? httpieItem(f.key, "@", f.fileName ?? "file.bin")
+          : httpieItem(f.key, "=", f.value)
       ));
     }
     return parts.join(" ");

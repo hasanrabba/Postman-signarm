@@ -187,6 +187,30 @@ const FIXTURES: [string, SignalRequest][] = [
   })],
   ["a PATCH", request({ method: "PATCH", body: body("json", { raw: '{"a":1}' }) as never })],
   ["a header value with padding spaces", request({ headers: [kv("X-Pad", " padded ")] })],
+  ["two rows sharing a header name", request({
+    headers: [kv("X-A", "one"), { id: "x2", key: "X-A", value: "two", enabled: true }],
+  })],
+  ["two Cookie rows", request({
+    headers: [kv("Cookie", "a=1"), { id: "c2", key: "Cookie", value: "b=2", enabled: true }],
+  })],
+  ["a Content-Type set by hand on a multipart body", request({
+    method: "POST", headers: [kv("Content-Type", "multipart/form-data")],
+    body: body("form-data", { formdata: [{ ...kv("a", "1"), type: "text" as const }] }) as never,
+  })],
+  ["a form field whose text starts with @", request({
+    method: "POST",
+    body: body("form-data", { formdata: [{ ...kv("msg", "@channel deploy is green"), type: "text" as const }] }) as never,
+  })],
+  ["a header value starting with an equals", request({ headers: [kv("X-Expr", "=1+1")] })],
+  ["a header deliberately left empty", request({ headers: [kv("X-Trace", "")] })],
+  ["a form field name holding a colon", request({
+    method: "POST",
+    body: body("form-data", { formdata: [{ ...kv("a:b", "1"), type: "text" as const }] }) as never,
+  })],
+  ["a form field value starting with an equals", request({
+    method: "POST",
+    body: body("form-data", { formdata: [{ ...kv("q", "=SUM(A1)"), type: "text" as const }] }) as never,
+  })],
   ["an api key in the query", request({
     auth: { type: "apikey", apikey: { key: "api_key", value: "K123", in: "query" } } as never,
   })],

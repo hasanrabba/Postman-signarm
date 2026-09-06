@@ -156,6 +156,38 @@ function resolveBody(body: SignalRequest["body"], scope: VarScope): SignalReques
   };
 }
 
+/**
+ * Collapse the request's header rows into the one-value-per-name map the wire
+ * format carries. Two rows with the same name used to collapse the wrong way —
+ * the second simply overwrote the first and its value went out with no
+ * warning — so they are joined the way HTTP does: RFC 9110 joins repeated
+ * field lines with ", ", and RFC 6265 wants a single Cookie header whose
+ * crumbs are separated by "; ".
+ *
+ * Exported because every code snippet has to build the same map: they were
+ * each keeping only the last row, so a request that authenticated in the app
+ * lost a credential when it was copied out.
+ */
+export function combineHeaders(rows: KeyValue[]): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const h of rows) {
+    if (!h.enabled || !h.key) continue;
+    const existing = Object.keys(headers).find((k) => k.toLowerCase() === h.key.toLowerCase());
+    if (existing === undefined) {
+      headers[h.key] = headerValue(h.value);
+    } else {
+      const sep = existing.toLowerCase() === "cookie" ? "; " : ", ";
+      headers[existing] = `${headers[existing]}${sep}${headerValue(h.value)}`;
+    }
+  }
+  return headers;
+}
+
+function headerKey(headers: Record<string, string>, name: string): string | undefined {
+  const lower = name.toLowerCase();
+  return Object.keys(headers).find((k) => k.toLowerCase() === lower);
+}
+
 function hasHeader(headers: Record<string, string>, name: string): boolean {
   const lower = name.toLowerCase();
   return Object.keys(headers).some((k) => k.toLowerCase() === lower);
@@ -191,22 +223,7 @@ function multipartBody(fields: { key: string; value: string; type?: "text" | "fi
 function serializeForProxy(req: SignalRequest) {
   const warnings: string[] = [];
   const url = buildUrl(req);
-  const headers: Record<string, string> = {};
-  // Two rows with the same name used to collapse — the second simply
-  // overwrote the first and its value went out with no warning. The wire
-  // format carries one value per name, so combine them the way HTTP does:
-  // RFC 9110 joins repeated field lines with ", ", and RFC 6265 wants a
-  // single Cookie header whose crumbs are separated by "; ".
-  for (const h of req.headers) {
-    if (!h.enabled || !h.key) continue;
-    const existing = Object.keys(headers).find((k) => k.toLowerCase() === h.key.toLowerCase());
-    if (existing === undefined) {
-      headers[h.key] = headerValue(h.value);
-    } else {
-      const sep = existing.toLowerCase() === "cookie" ? "; " : ", ";
-      headers[existing] = `${headers[existing]}${sep}${headerValue(h.value)}`;
-    }
-  }
+  const headers = combineHeaders(req.headers);
   let body: string | undefined;
   const b = req.body;
   if (b.mode === "json" || b.mode === "text" || b.mode === "xml") {
@@ -222,8 +239,15 @@ function serializeForProxy(req: SignalRequest) {
     if (fields.length > 0) {
       const { body: bodyStr, boundary } = multipartBody(fields);
       body = bodyStr;
-      if (!hasHeader(headers, "content-type"))
-        headers["Content-Type"] = `multipart/form-data; boundary=${boundary}`;
+      // A multipart Content-Type is useless without the boundary that is
+      // actually in the body. Setting one by hand — `multipart/form-data` with
+      // nothing after it — left the server parsing zero fields, because the
+      // header named no boundary at all and the app never added the one it had
+      // just generated.
+      const own = headerKey(headers, "content-type");
+      if (!own) headers["Content-Type"] = `multipart/form-data; boundary=${boundary}`;
+      else if (!/boundary=/i.test(headers[own]))
+        headers[own] = `${headers[own].replace(/;\s*$/, "")}; boundary=${boundary}`;
     }
   } else if (b.mode === "graphql" && b.graphql) {
     let variables: unknown = {};

@@ -84,7 +84,9 @@ describe("exporting to cURL", () => {
       url: "https://x.test/",
       body: { mode: "form-data", formdata: [{ id: "f", key: "a'b", value: "v", enabled: true }] },
     }));
-    expect(out).toContain(`-F 'a'\\''b=v'`);
+    // A text field goes out as --form-string, because -F reads a leading @ as
+    // a path; the quote still has to be escaped either way.
+    expect(out).toContain(`--form-string 'a'\\''b=v'`);
   });
 
   test("an ordinary header is quoted but otherwise untouched (control)", () => {
