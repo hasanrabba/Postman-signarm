@@ -296,7 +296,11 @@ function mergeHeadersInto(req: SignalRequest, actual: Record<string, string>): v
  * ("InvalidHeader"), so the copied snippet raised instead of sending.
  */
 export function headerValue(v: string): string {
-  return v.trim();
+  // A CR or LF inside a value is request splitting: fetch refuses the request
+  // outright, but the exported cURL command happily wrote a second header
+  // line, so the copied command could do what the app itself blocks. Folding
+  // them to a space is what an unfolding parser would have produced anyway.
+  return v.replace(/[\r\n]+/g, " ").trim();
 }
 
 export function defaultContentType(mode: SignalRequest["body"]["mode"]): string | undefined {

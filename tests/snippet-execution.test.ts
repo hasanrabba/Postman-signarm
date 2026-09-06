@@ -209,6 +209,24 @@ const FIXTURES: [string, SignalRequest][] = [
     method: "POST",
     body: body("form-data", { formdata: [{ ...kv("q", "=SUM(A1)"), type: "text" as const }] }) as never,
   })],
+  ["a path template in the URL", request({ url: `${BASE}/users/{id}/posts` })],
+  // Square brackets are covered by a unit test instead: the app leaves them
+  // literal, curl needs -g to accept them, and python-requests and httpie
+  // percent-encode them on their own — their normalisation, not the
+  // generator's, and no server can tell the difference.
+  ["a space in the URL path", request({ url: `${BASE}/a b` })],
+  ["a form-urlencoded body with every row unticked", request({
+    method: "POST",
+    body: body("form-urlencoded", { urlencoded: [{ id: "u", key: "a", value: "1", enabled: false }] }) as never,
+  })],
+  ["two form fields sharing a name", request({
+    method: "POST",
+    body: body("form-data", { formdata: [
+      { ...kv("tags", "red"), type: "text" as const },
+      { id: "t2", key: "tags", value: "blue", enabled: true, type: "text" as const },
+    ] }) as never,
+  })],
+  ["a header value holding a line break", request({ headers: [kv("X-Trace", "abc\r\nX-Injected: yes")] })],
   ["an api key in the query", request({
     auth: { type: "apikey", apikey: { key: "api_key", value: "K123", in: "query" } } as never,
   })],

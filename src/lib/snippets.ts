@@ -114,14 +114,17 @@ function pythonSnippet(req: SignalRequest): string {
   const fields = formFields(req);
   const headers = snippetHeaders(req, Boolean(fields));
   const body = bodyString(req);
+  // A dict cannot hold two fields of the same name — `tags=red` and
+  // `tags=blue` collapsed to one and the first value was thrown away. requests
+  // takes a list of pairs for exactly this.
   const pyFiles = fields
-    ? `files = {${fields
+    ? `files = [${fields
         .map((f) =>
           f.type === "file"
-            ? `${JSON.stringify(f.key)}: open(${JSON.stringify(f.fileName ?? "file.bin")}, "rb")`
-            : `${JSON.stringify(f.key)}: (None, ${JSON.stringify(f.value)})`
+            ? `(${JSON.stringify(f.key)}, open(${JSON.stringify(f.fileName ?? "file.bin")}, "rb"))`
+            : `(${JSON.stringify(f.key)}, (None, ${JSON.stringify(f.value)}))`
         )
-        .join(", ")}}`
+        .join(", ")}]`
     : "";
   return [
     "import requests",
@@ -167,7 +170,11 @@ function goSnippet(req: SignalRequest): string {
       : body !== undefined
         ? [`    body := strings.NewReader(${JSON.stringify(body)})`]
         : ["    var body io.Reader = nil"]),
-    `    req, _ := http.NewRequest(${JSON.stringify(req.method)}, ${JSON.stringify(urlWithQuery(req))}, body)`,
+    // Ignoring this error left req nil, and the next line dereferenced it: a
+    // URL Go's parser rejects gave a segfault and a runtime stack trace
+    // instead of saying the URL was bad.
+    `    req, err := http.NewRequest(${JSON.stringify(req.method)}, ${JSON.stringify(urlWithQuery(req))}, body)`,
+    "    if err != nil { panic(err) }",
   ];
   // multipart.Writer owns the Content-Type: it carries the boundary.
   for (const [k, v] of Object.entries(snippetHeaders(req, Boolean(fields)))) {
@@ -220,6 +227,10 @@ function httpieSnippet(req: SignalRequest): string {
   // means what this body mode means.
   if (fields) parts.push("--multipart");
   parts.push(req.method, shellArg(urlWithQuery(req)));
+  // Everything after this is a request item, never an option. A form field
+  // named "-o" was read as HTTPie's --output flag, and running the copied
+  // command overwrote a file of that name in the current directory.
+  parts.push("--");
   // HTTPie derives the multipart boundary itself.
   for (const [k, v] of Object.entries(snippetHeaders(req, Boolean(fields)))) {
     parts.push(shellArg(httpieItem(k, ":", v)));

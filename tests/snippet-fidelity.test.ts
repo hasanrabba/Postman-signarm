@@ -200,3 +200,64 @@ describe("httpie request items are escaped", () => {
   test("an ordinary header is untouched", () =>
     expect(generateSnippet(request({ headers: [kv("X-A", "1")] }), "httpie")).toContain("X-A:1"));
 });
+
+/* The second sweep's findings, each checked against real curl 8.5.0,
+   python-requests, go and httpie before being fixed. */
+describe("the second sweep", () => {
+  test("a path template is not read as a curl glob", () => {
+    // curl requested /users/id/posts — braces are a glob set to it. Encoding
+    // them takes them out of that syntax AND matches what the app sends, since
+    // fetch normalises them the same way.
+    const out = toCurl(request({ url: "http://x.test/users/{id}/posts" }));
+    expect(out).toContain("/users/%7Bid%7D/posts");
+    expect(out).not.toContain("{id}");
+  });
+  test("square brackets need globbing off, because the app sends them literal", () =>
+    expect(toCurl(request({ url: "http://x.test/a[1]" }))).toContain("-g"));
+  test("an ordinary URL gets no -g", () =>
+    expect(toCurl(request({}))).not.toContain(" -g"));
+
+  test("a space in the path is encoded so the command runs", () =>
+    // curl: (3) URL rejected: Malformed input to a URL function
+    expect(toCurl(request({ url: "http://x.test/a b" }))).toContain("/a%20b"));
+
+  test("a form body with every row unticked keeps its content type", () => {
+    const r = request({ method: "POST", body: { mode: "form-urlencoded", raw: "", formdata: [],
+      urlencoded: [{ id: "u", key: "a", value: "1", enabled: false }],
+      graphql: { query: "", variables: "" } } as never });
+    expect(toCurl(r)).toContain("--data-raw");
+  });
+
+  test("a body too large for a shell argument points at a file", () => {
+    const big = '{"a":"' + "x".repeat(200_000) + '"}';
+    const out = toCurl(request({ method: "POST", body: { mode: "json", raw: big, urlencoded: [], formdata: [], graphql: { query: "", variables: "" } } as never }));
+    expect(out).toContain("--data-binary @body.json");
+    expect(out).toContain("more than a shell will take as one");
+    expect(out.length).toBeLessThan(2000);
+  });
+
+  test("two form fields sharing a name both survive into python", () => {
+    const r = request({ method: "POST", body: { mode: "form-data", raw: "", urlencoded: [],
+      formdata: [
+        { ...kv("tags", "red"), type: "text" as const },
+        { id: "t2", key: "tags", value: "blue", enabled: true, type: "text" as const },
+      ], graphql: { query: "", variables: "" } } as never });
+    const out = generateSnippet(r, "python-requests");
+    expect(out).toContain("files = [");   // a dict collapsed them
+    expect(out).toContain("red");
+    expect(out).toContain("blue");
+  });
+
+  test("the go snippet checks the error instead of dereferencing nil", () =>
+    expect(generateSnippet(request({}), "go")).toContain("req, err := http.NewRequest"));
+
+  test("httpie ends option parsing before the request items", () =>
+    // a form field named "-o" was read as --output and overwrote a local file
+    expect(generateSnippet(request({}), "httpie")).toMatch(/ -- ?/));
+
+  test("a line break in a header value cannot forge a second header", () => {
+    const out = toCurl(request({ headers: [kv("X-Trace", "abc\r\nX-Injected: yes")] }));
+    expect(out).not.toContain("\n  X-Injected");
+    expect(out).toContain("X-Trace: abc X-Injected: yes");
+  });
+});

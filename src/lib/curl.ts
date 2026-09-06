@@ -685,6 +685,28 @@ function looksLikeJson(s: string): boolean {
   try { JSON.parse(t); return true; } catch { return false; }
 }
 
+/**
+ * curl's URL parser refuses a literal space ("URL rejected: Malformed input to
+ * a URL function"), so a path the app reaches happily produced a command that
+ * would not run. fetch percent-encodes these before sending; do the same.
+ */
+function curlUrl(url: string): string {
+  // Braces are encoded because that is what the app puts on the wire — fetch
+  // normalises /users/{id}/posts to /users/%7Bid%7D/posts — and it also takes
+  // them out of curl's glob syntax. Square brackets are left alone, because
+  // the app leaves those literal.
+  return url.replace(/[\u0000-\u0020\u007f"<>^`|\\{}]/g, (c) =>
+    "%" + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0"));
+}
+
+/**
+ * A shell will not take a single argument longer than about 128 KB
+ * ("Argument list too long"), so a large body made the copied command
+ * unrunnable. Point at a file instead and say so — the alternative, a
+ * here-document, appends a newline the request never had.
+ */
+const MAX_INLINE_BODY = 100_000;
+
 export function toCurl(req: SignalRequest): string {
   const parts: string[] = ["curl"];
   const b = req.body;
@@ -693,7 +715,9 @@ export function toCurl(req: SignalRequest): string {
   // that silently sent a POST. Say the method explicitly whenever there is one.
   const carriesBody = sendsBody(req.method) &&
     ((b.mode === "json" || b.mode === "text" || b.mode === "xml") && Boolean(b.raw)) ||
-    (b.mode === "form-urlencoded" && buildQuery(b.urlencoded ?? []) !== "") ||
+    // even with every row unticked: the app still sends the form content type,
+    // and `--data-raw ''` is what tells curl this is a form post.
+    b.mode === "form-urlencoded" ||
     (b.mode === "form-data" && (b.formdata ?? []).some((f) => f.enabled && f.key)) ||
     b.mode === "graphql";
   // `-X HEAD` makes curl wait for a body that a HEAD response never sends, so
@@ -701,7 +725,11 @@ export function toCurl(req: SignalRequest): string {
   // spelling that works.
   if (req.method === "HEAD") parts.push("-I");
   else if (req.method !== "GET" || carriesBody) parts.push(`-X ${req.method}`);
-  const url = appendQuery(req.url, buildQuery(req.params));
+  const url = curlUrl(appendQuery(req.url, buildQuery(req.params)));
+  // curl reads [1-5] in a URL as a glob and refuses one it cannot parse, so a
+  // URL holding square brackets would not run at all. (Braces are gone by now:
+  // curlUrl encodes them, as the app does.)
+  if (/[[\]]/.test(url)) parts.push("-g");
   parts.push(shellArg(url));
   let hasContentType = false;
   for (const h of req.headers) {
@@ -723,17 +751,31 @@ export function toCurl(req: SignalRequest): string {
     const auto = defaultContentType(b.mode);
     if (auto) parts.push(`-H ${shellArg(`Content-Type: ${auto}`)}`);
   }
+  const notes: string[] = [];
+  /** Inline the body, or point at a file when a shell would refuse the argument. */
+  const dataArg = (raw: string, ext: string) => {
+    if (raw.length <= MAX_INLINE_BODY) return `--data-raw ${shellArg(raw)}`;
+    const name = `body.${ext}`;
+    notes.push(
+      `# The body is ${raw.length} bytes — more than a shell will take as one`,
+      `# argument. Save it to ${name} first; this reads it from there.`
+    );
+    return `--data-binary @${name}`;
+  };
+
   if (!carriesBody) {
     // nothing to send
   } else if (b.mode === "json" || b.mode === "text" || b.mode === "xml") {
-    if (b.raw) parts.push(`--data-raw ${shellArg(b.raw)}`);
+    if (b.raw) parts.push(dataArg(b.raw, b.mode === "json" ? "json" : b.mode === "xml" ? "xml" : "txt"));
   } else if (b.mode === "form-urlencoded" && b.urlencoded) {
     // Not `--data-urlencode` per field: curl encodes a space as `+` where the
     // app encodes it as `%20`, so the exported command put different bytes on
     // the wire than the request it was copied from. The body is already
     // encoded, and curl labels a --data-raw body as form data by itself.
     const encoded = buildQuery(b.urlencoded);
-    if (encoded) parts.push(`--data-raw ${shellArg(encoded)}`);
+    // `--data-raw ''` still tells curl this is a form post. Emitting nothing
+    // when every row is unticked lost the type the app still sends.
+    parts.push(`--data-raw ${shellArg(encoded)}`);
   } else if (b.mode === "form-data" && b.formdata) {
     for (const kv of b.formdata) {
       if (!kv.enabled || !kv.key) continue;
@@ -749,9 +791,9 @@ export function toCurl(req: SignalRequest): string {
       query: b.graphql.query,
       variables: safeJSON(b.graphql.variables),
     });
-    parts.push(`--data-raw ${shellArg(payload)}`);
+    parts.push(dataArg(payload, "json"));
   }
-  return parts.join(" \\\n  ");
+  return [...notes, parts.join(" \\\n  ")].join("\n");
 }
 
 function safeJSON(src: string) {
