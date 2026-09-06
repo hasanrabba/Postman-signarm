@@ -192,3 +192,42 @@ describe("a command that ends on a flag", () => {
     expect(() => parseCurl("curl http://x.test/a --data-urlencode")).not.toThrow();
   });
 });
+
+/* curl reads -b's argument as a cookie FILE when it holds no `=`. Sending the
+   path as the Cookie header sent no cookies and told the server where the
+   user keeps their files. */
+describe("-b with a cookie file", () => {
+  test("does not become a Cookie header", async () =>
+    expect((await wire("curl -b /home/me/cookies.txt http://x.test/a")).headers["cookie"])
+      .toBeUndefined());
+  test("a cookie string still does (control)", async () =>
+    expect((await wire("curl -b 'a=1; b=2' http://x.test/a")).headers["cookie"]).toBe("a=1; b=2"));
+});
+
+describe("-F file specs", () => {
+  test("only the base name is sent, not the local path", () => {
+    const r = parseCurl("curl http://x.test/a -F 'x=@/home/me/secrets/report.csv'")!;
+    expect(r.body.formdata![0]).toMatchObject({ type: "file", fileName: "report.csv" });
+  });
+  test("a ;type= option does not end up glued to the filename", () => {
+    const r = parseCurl("curl http://x.test/a -F 'avatar=@photo.png;type=image/png'")!;
+    expect(r.body.formdata![0].fileName).toBe("photo.png");
+  });
+  test("a ;filename= option wins", () => {
+    const r = parseCurl("curl http://x.test/a -F 'x=@/tmp/a.bin;filename=nice.bin'")!;
+    expect(r.body.formdata![0].fileName).toBe("nice.bin");
+  });
+  test("'<' reads the field's value, so it is a text part not an upload", () => {
+    const r = parseCurl("curl http://x.test/a -F 'notes=<notes.txt'")!;
+    expect(r.body.formdata![0]).toMatchObject({ type: "text", key: "notes" });
+    expect(r.body.formdata![0].fileName).toBeUndefined();
+  });
+});
+
+test("-d with an empty body still carries curl's Content-Type", async () =>
+  expect((await wire("curl -d '' http://x.test/a")).headers["content-type"])
+    .toBe("application/x-www-form-urlencoded"));
+
+test("--data-urlencode with no field name carries it too", async () =>
+  expect((await wire("curl --data-urlencode 'some text' http://x.test/a")).headers["content-type"])
+    .toBe("application/x-www-form-urlencoded"));

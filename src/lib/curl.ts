@@ -404,9 +404,29 @@ export function parseCurl(cmd: string): SignalRequest | null {
         // `--form-string` is the spelling that keeps @ and < literal — it is
         // what you reach for to post a message starting with "@someone".
         if (t !== "--form-string" && (value.startsWith("@") || value.startsWith("<"))) {
-          type = "file";
-          fileName = value.slice(1);
-          value = "";
+          const uploads = value.startsWith("@");
+          const opts = value.slice(1).split(";");
+          const path = opts.shift() ?? "";
+          let declaredName: string | undefined;
+          for (const o of opts) {
+            const [ok, ov] = splitOnce(o.trim(), "=");
+            // `;type=` is dropped: the part's content type has nowhere to live
+            // until form-data rows carry one. It used to end up glued onto the
+            // filename, which was worse.
+            if (ok.toLowerCase() === "filename") declaredName = ov;
+          }
+          if (uploads) {
+            type = "file";
+            // curl sends the base name. The full path was going to the server,
+            // telling it where the user keeps their files.
+            fileName = declaredName ?? path.split(/[\\/]/).pop() ?? path;
+            value = "";
+          } else {
+            // `<` reads the field's VALUE from the file: an ordinary text part,
+            // with no filename and no application/octet-stream.
+            type = "text";
+            value = `[file:${path}]`;
+          }
         }
         formdata.push({ id: uid("fd"), key, value, enabled: true, type, fileName });
         bodyMode = "form-data";
@@ -447,7 +467,10 @@ export function parseCurl(cmd: string): SignalRequest | null {
       }
       case "-b": case "--cookie": {
         const v = next();
-        if (v) headers.push({ id: uid("h"), key: "Cookie", value: v, enabled: true });
+        // curl reads the argument as a cookie FILE when it holds no `=`.
+        // Sending the path as the Cookie header did not send the cookies and
+        // did leak an absolute path from the user's machine to the server.
+        if (v && v.includes("=")) headers.push({ id: uid("h"), key: "Cookie", value: v, enabled: true });
         break;
       }
       case "--url": {
@@ -590,7 +613,7 @@ export function parseCurl(cmd: string): SignalRequest | null {
   // header the command set for itself, never over a detected mode that brings
   // its own type, and never on `-G`, which by now has moved the data into the
   // query string and has no body left to label.
-  if (dataFlag && bodyRaw && bodyMode === "text" && !ct) {
+  if (dataFlag && bodyMode === "text" && !ct) {
     headers.push({
       id: uid("h"),
       key: "Content-Type",
