@@ -277,7 +277,18 @@ function BodyEditor({ tab }: { tab: TabState }) {
               if (!input) return;
               const parsed = parseCurl(input);
               if (!parsed) return alert("Could not parse cURL");
-              updateDraft(tab.id, parsed);
+              // A half-copied command parses fine but has no URL in it, and
+              // applying it wiped the URL, headers and body of the request the
+              // user was working on, with nothing to say what had happened.
+              if (!parsed.url) return alert("That command has no URL in it — nothing was changed.");
+              // A tab's link to its saved request IS the draft's id. Taking the
+              // imported one detached the tab, so pressing Save added a SECOND
+              // request to the collection and left the original untouched, and
+              // the collection's variables stopped resolving. The name is the
+              // user's too, unless they never gave it one.
+              const { id: _importedId, name: importedName, ...rest } = parsed;
+              const named = tab.draft.name && tab.draft.name !== "Untitled request";
+              updateDraft(tab.id, { ...rest, name: named ? tab.draft.name : importedName });
             }}
           >Import cURL</button>
         </span>

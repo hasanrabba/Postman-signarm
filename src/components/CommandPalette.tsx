@@ -49,8 +49,10 @@ export function CommandPalette() {
           if (!text) return;
           import("@/lib/curl").then(({ parseCurl }) => {
             const r = parseCurl(text);
-            if (r) store.openDraft(r);
-            else alert("Could not parse cURL");
+            if (!r) return alert("Could not parse cURL");
+            // A half-copied command parses but names nowhere to send anything.
+            if (!r.url) return alert("That command has no URL in it.");
+            store.openDraft(r);
           });
         } },
       { id: "ai-describe", label: "AI: describe this request", hint: "stub", run: () => {

@@ -68,3 +68,79 @@ describe("what the Import cURL button actually sends", () => {
     expect(useStore.getState().tabs[0].draft.params.map((p) => p.key)).toEqual(["x", "y"]);
   }, 30_000);
 });
+
+/** open a saved request, go to the Body tab, and import `cmd` into it */
+async function importInto(cmd: string, opts: { collectionVar?: [string, string] } = {}) {
+  const user = userEvent.setup();
+  const store = useStore.getState();
+  const cid = store.createCollection("Team API");
+  const root = useStore.getState().collections[cid].rootFolderId;
+  const rid = useStore.getState().addRequest(cid, root, {
+    name: "Login", method: "POST", url: "https://api.test/login",
+    headers: [{ id: "h1", key: "X-Keep", value: "1", enabled: true }],
+  });
+  if (opts.collectionVar) {
+    const [key, value] = opts.collectionVar;
+    useStore.setState((s) => ({
+      collections: {
+        ...s.collections,
+        [cid]: { ...s.collections[cid], variables: [{ id: "v1", key, value, enabled: true }] },
+      },
+    }));
+  }
+  useStore.getState().openRequest(cid, rid);
+
+  render(<Home />);
+  await user.click(await screen.findByRole("button", { name: /^body$/i }));
+  vi.stubGlobal("prompt", () => cmd);
+  const alerts: string[] = [];
+  vi.stubGlobal("alert", (m: string) => { alerts.push(m); });
+  await user.click(await screen.findByRole("button", { name: /import curl/i }));
+  return { user, cid, rid, alerts };
+}
+
+/* A tab's link to its saved request IS the draft's id. Taking the imported one
+   detached the tab, so the edit the user thought they had made went into a
+   second request instead. */
+describe("importing into a saved request", () => {
+  test("Save updates that request instead of adding another", async () => {
+    const { user, cid, rid } = await importInto("curl -X PUT https://api.test/v2/login -d 'a=1'");
+
+    await user.click(await screen.findByRole("button", { name: /^save$/i }));
+
+    const col = useStore.getState().collections[cid];
+    expect(Object.keys(col.requests)).toEqual([rid]);
+    expect(col.requests[rid].method).toBe("PUT");
+    expect(col.requests[rid].url).toBe("https://api.test/v2/login");
+  }, 30_000);
+
+  test("the tab keeps the request's own name", async () => {
+    await importInto("curl https://api.test/v2/login");
+    expect(useStore.getState().tabs[0].draft.name).toBe("Login");
+  }, 30_000);
+
+  test("collection variables still resolve afterwards", async () => {
+    const { user } = await importInto(
+      "curl https://api.test/x -H 'X-Trace: {{token}}'",
+      { collectionVar: ["token", "s3cr3t"] }
+    );
+
+    await user.click(await screen.findByRole("button", { name: /^send$/i }));
+    await waitFor(() => expect(sent.length).toBeGreaterThan(0), { timeout: 5000 });
+    const h = Object.fromEntries(
+      Object.entries(sent.at(-1)!.headers).map(([k, v]) => [k.toLowerCase(), v])
+    );
+    expect(h["x-trace"]).toBe("s3cr3t");
+  }, 30_000);
+});
+
+/* A half-copied command parses fine but names nowhere to send anything. */
+describe("a command with no URL", () => {
+  test("does not erase the request you had open", async () => {
+    const { alerts } = await importInto("curl -X POST");
+    const draft = useStore.getState().tabs[0].draft;
+    expect(draft.url).toBe("https://api.test/login");
+    expect(draft.headers.map((h) => h.key)).toEqual(["X-Keep"]);
+    expect(alerts.join(" ")).toMatch(/no URL/i);
+  }, 30_000);
+});
