@@ -231,3 +231,19 @@ test("-d with an empty body still carries curl's Content-Type", async () =>
 test("--data-urlencode with no field name carries it too", async () =>
   expect((await wire("curl --data-urlencode 'some text' http://x.test/a")).headers["content-type"])
     .toBe("application/x-www-form-urlencoded"));
+
+/* Two curl spellings that look alike and mean opposite things. */
+describe("curl's two empty-header spellings", () => {
+  test("'X-Name;' sends the header empty", async () =>
+    expect((await wire("curl http://x.test/a -H 'X-Kill;'")).headers["x-kill"]).toBe(""));
+  test("'X-Name:' with nothing after it removes it", async () =>
+    expect((await wire("curl http://x.test/a -H 'X-Empty:'")).headers["x-empty"]).toBeUndefined());
+  test("'X-Name: ' with only a space also removes it", async () =>
+    expect((await wire("curl http://x.test/a -H 'X-Empty: '")).headers["x-empty"]).toBeUndefined());
+  test("an ordinary header is unaffected (control)", async () =>
+    expect((await wire("curl http://x.test/a -H 'X-A: 1'")).headers["x-a"]).toBe("1"));
+});
+
+test("--url does not displace a URL already given", async () =>
+  expect((await wire("curl http://first.test/a --url http://second.test/b")).url)
+    .toBe("http://first.test/a"));

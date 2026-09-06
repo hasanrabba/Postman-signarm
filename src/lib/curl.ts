@@ -295,11 +295,21 @@ export function parseCurl(cmd: string): SignalRequest | null {
 
   const addHeader = (raw: string | undefined) => {
     if (!raw) return;
+    // curl has two spellings that look alike and mean opposite things:
+    // `-H 'X-Name;'` SENDS the header with an empty value, and `-H 'X-Name:'`
+    // with nothing after the colon REMOVES it. Signal had them the wrong way
+    // round — it dropped the first and sent the second.
+    const trimmed = raw.trimEnd();
+    if (trimmed.endsWith(";") && !trimmed.includes(":")) {
+      const key = trimmed.slice(0, -1).trim();
+      if (key) headers.push({ id: uid("h"), key, value: "", enabled: true });
+      return;
+    }
     const colon = raw.indexOf(":");
     if (colon <= 0) return;
     const key = raw.slice(0, colon).trim();
     const value = raw.slice(colon + 1).trim();
-    if (!key) return;
+    if (!key || !value) return;
     headers.push({ id: uid("h"), key, value, enabled: true });
   };
 
@@ -475,7 +485,10 @@ export function parseCurl(cmd: string): SignalRequest | null {
       }
       case "--url": {
         const v = next();
-        if (v) url = withScheme(v);
+        // curl ADDS a URL to its list rather than replacing one, and performs
+        // the transfers in order. Overwriting meant `curl A --url B` imported
+        // B — the second request, not the one curl runs first.
+        if (v && !url) url = withScheme(v);
         break;
       }
       case "-G": case "--get":
