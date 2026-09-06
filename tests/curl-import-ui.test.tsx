@@ -144,3 +144,52 @@ describe("a command with no URL", () => {
     expect(alerts.join(" ")).toMatch(/no URL/i);
   }, 30_000);
 });
+
+/* The Snippets tab warns when a request still holds a {{placeholder}}. It used
+   to test the generated TEXT, which missed the two places a placeholder is
+   hardest to see: percent-encoded in a query parameter, and base64-encoded
+   inside an Authorization header that looks entirely real. */
+async function openSnippets(over: Record<string, unknown>) {
+  const user = userEvent.setup();
+  useStore.getState().openDraft({ url: "https://api.test/a", ...over } as never);
+  render(<Home />);
+  await user.click(await screen.findByRole("button", { name: /^snippets$/i }));
+  return user;
+}
+const WARNING = /still holds a/i;
+
+describe("the unresolved-placeholder warning", () => {
+  test("catches a placeholder in a query parameter", async () => {
+    await openSnippets({ params: [{ id: "p", key: "api_key", value: "{{PROD_KEY}}", enabled: true }] });
+    expect(screen.getByText(WARNING)).toBeInTheDocument();
+  });
+
+  test("catches one used as a Basic auth password", async () => {
+    await openSnippets({ auth: { type: "basic", basic: { username: "u", password: "{{VAULT_PW}}" } } });
+    expect(screen.getByText(WARNING)).toBeInTheDocument();
+  });
+
+  test("catches one in a header", async () => {
+    await openSnippets({ headers: [{ id: "h", key: "X-Token", value: "{{tok}}", enabled: true }] });
+    expect(screen.getByText(WARNING)).toBeInTheDocument();
+  });
+
+  test("stays quiet when nothing is unresolved", async () => {
+    await openSnippets({ headers: [{ id: "h", key: "X-Token", value: "real", enabled: true }] });
+    expect(screen.queryByText(WARNING)).toBeNull();
+  });
+});
+
+/* The language lived in the panel, which unmounts when you leave the tab. */
+describe("the snippet language survives leaving the tab", () => {
+  test("picking python and coming back keeps python", async () => {
+    const user = await openSnippets({});
+    await user.click(screen.getByRole("button", { name: /^python-requests$/i }));
+    expect(screen.getByText(/import requests/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^headers$/i }));
+    await user.click(screen.getByRole("button", { name: /^snippets$/i }));
+
+    expect(screen.getByText(/import requests/)).toBeInTheDocument();
+  }, 30_000);
+});

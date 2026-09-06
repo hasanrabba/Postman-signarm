@@ -1,4 +1,4 @@
-import type { KeyValue } from "./types";
+import type { KeyValue, SignalRequest } from "./types";
 
 const TOKEN = /\{\{\s*([^}\s]+)\s*\}\}/g;
 
@@ -47,4 +47,22 @@ export function resolveKV(list: KeyValue[], scope: VarScope): KeyValue[] {
     key: resolveVars(kv.key, scope),
     value: resolveVars(kv.value, scope),
   }));
+}
+
+/**
+ * Does anything the request will send still hold a {{placeholder}}?
+ *
+ * Checked on the REQUEST, not on the generated text: a placeholder in a query
+ * parameter comes out percent-encoded as %7B%7B..., and one used as a Basic
+ * auth password comes out base64-encoded inside an Authorization header that
+ * looks entirely real. Scanning the output missed both, so the Snippets tab
+ * said nothing while handing over a command that logs in as the literal user
+ * "{{SECRET}}" or sends api_key=%7B%7BPROD_KEY%7D%7D.
+ *
+ * Scripts are left out — they are not sent, and they legitimately talk about
+ * variables.
+ */
+export function hasUnresolvedVars(req: SignalRequest): boolean {
+  const sent = JSON.stringify([req.url, req.params, req.headers, req.body, req.auth]);
+  return new RegExp(TOKEN.source).test(sent);
 }

@@ -10,7 +10,7 @@ import { generateSnippet, type SnippetLang } from "@/lib/snippets";
 import { uid } from "@/lib/id";
 import { redactRequest } from "@/lib/secrets";
 import { secretsAsVars } from "@/lib/vault";
-import type { VarScope } from "@/lib/variables";
+import { hasUnresolvedVars, type VarScope } from "@/lib/variables";
 
 const METHODS: Method[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 const BODY_MODES: BodyMode[] = ["none", "json", "text", "xml", "form-urlencoded", "form-data", "graphql"];
@@ -24,6 +24,10 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
   } = useStore();
   const draft = tab.draft;
   const [activeTab, setActiveTab] = useState<Tab>("params");
+  // Kept out here so the choice survives leaving the tab: it lived inside the
+  // panel, which unmounts, so picking python and stepping over to Headers to
+  // fix a typo put you back on curl.
+  const [snippetLang, setSnippetLang] = useState<SnippetLang>("curl");
 
   const collection = useMemo(
     () => Object.values(collections).find((c) => Object.prototype.hasOwnProperty.call(c.requests, draft.id)),
@@ -203,6 +207,8 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
         {activeTab === "snippets" && (
           <SnippetsPanel
             request={draft}
+            lang={snippetLang}
+            setLang={setSnippetLang}
             scope={{
               global: globals,
               environment: activeEnvId ? environments[activeEnvId]?.variables : undefined,
@@ -353,8 +359,12 @@ function ScriptEditor({ value, onChange, hint }: { value: string; onChange: (v: 
   );
 }
 
-function SnippetsPanel({ request, scope }: { request: SignalRequest; scope: VarScope }) {
-  const [lang, setLang] = useState<SnippetLang>("curl");
+function SnippetsPanel({ request, scope, lang, setLang }: {
+  request: SignalRequest;
+  scope: VarScope;
+  lang: SnippetLang;
+  setLang: (l: SnippetLang) => void;
+}) {
   // Generated from the resolved request, because a command still carrying
   // {{version}} in its URL is one real curl refuses to run, and one carrying
   // {{token}} in a header sends that literal text and comes back 401.
@@ -364,7 +374,7 @@ function SnippetsPanel({ request, scope }: { request: SignalRequest; scope: VarS
   // the vault that way cannot be called back. They stay as placeholders.
   const resolved = resolveRequest(request, scope);
   const snippet = generateSnippet(resolved, lang);
-  const hasPlaceholder = /\{\{\s*[^}\s]+\s*\}\}/.test(snippet);
+  const hasPlaceholder = hasUnresolvedVars(resolved);
   return (
     <div className="space-y-2">
       <div className="flex gap-1 flex-wrap">
@@ -376,9 +386,11 @@ function SnippetsPanel({ request, scope }: { request: SignalRequest; scope: VarS
       <pre className="input font-mono h-72 overflow-auto whitespace-pre-wrap">{snippet}</pre>
       {hasPlaceholder && (
         <div className="text-[11px] text-signal-err">
-          Still holds a {"{{placeholder}}"} — a vault secret, or a variable nothing defines. Fill it
-          in before running this: vault secrets are left out on purpose so a copied command cannot
-          carry one out of the vault.
+          This request still holds a {"{{placeholder}}"} — a vault secret, or a variable nothing
+          defines. Unless the {"{{...}}"} is meant literally, fill it in before running this. Vault
+          secrets are left out on purpose, so that a copied command cannot carry one out of the
+          vault; note that an unfilled one can be hard to spot in the output, where it may arrive
+          percent-encoded or inside a base64 Authorization header.
         </div>
       )}
     </div>
