@@ -4,6 +4,7 @@ import { toCurl } from "./curl";
 import { appendQuery, buildQuery } from "./url";
 import { combineHeaders, defaultContentType } from "./executor";
 import { shellArg } from "./shell";
+import { sendsBody } from "./wire";
 
 export type SnippetLang = "curl" | "fetch" | "node-fetch" | "python-requests" | "go" | "httpie";
 
@@ -21,6 +22,9 @@ export function generateSnippet(request: SignalRequest, lang: SnippetLang): stri
 
 function bodyString(req: SignalRequest): string | undefined {
   const b = req.body;
+  // The app drops it, so a snippet that sends one is doing something the app
+  // never does — and fetch and node-fetch refuse to run at all with one.
+  if (!sendsBody(req.method)) return undefined;
   if (b.mode === "none") return undefined;
   if (b.mode === "json" || b.mode === "text" || b.mode === "xml") return b.raw || "";
   if (b.mode === "form-urlencoded") {
@@ -41,6 +45,7 @@ function bodyString(req: SignalRequest): string | undefined {
 
 /** Enabled form-data fields, or undefined when this isn't a multipart body. */
 function formFields(req: SignalRequest) {
+  if (!sendsBody(req.method)) return undefined;
   if (req.body.mode !== "form-data") return undefined;
   const fields = (req.body.formdata ?? []).filter((f) => f.enabled && f.key);
   return fields.length ? fields : undefined;

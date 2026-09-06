@@ -5,6 +5,7 @@ import { autoFlagSecretsOnRequest } from "./secrets";
 import { appendQuery, buildQuery, splitFragment } from "./url";
 import { defaultContentType, headerValue } from "./executor";
 import { shellArg } from "./shell";
+import { sendsBody } from "./wire";
 
 const METHODS: Method[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 
@@ -690,7 +691,7 @@ export function toCurl(req: SignalRequest): string {
   // Any data flag makes curl default to POST, so a GET that carries a body —
   // which this app allows and some search APIs require — exported as a command
   // that silently sent a POST. Say the method explicitly whenever there is one.
-  const carriesBody =
+  const carriesBody = sendsBody(req.method) &&
     ((b.mode === "json" || b.mode === "text" || b.mode === "xml") && Boolean(b.raw)) ||
     (b.mode === "form-urlencoded" && buildQuery(b.urlencoded ?? []) !== "") ||
     (b.mode === "form-data" && (b.formdata ?? []).some((f) => f.enabled && f.key)) ||
@@ -718,11 +719,13 @@ export function toCurl(req: SignalRequest): string {
   // curl sets its own type for -F and --data-urlencode; everything else has to
   // carry the type the app would have sent, or the command means something
   // different from the request it was copied from.
-  if (!hasContentType && (b.mode === "json" || b.mode === "xml" || b.mode === "graphql")) {
+  if (!hasContentType && (b.mode === "json" || b.mode === "xml" || b.mode === "text" || b.mode === "graphql")) {
     const auto = defaultContentType(b.mode);
     if (auto) parts.push(`-H ${shellArg(`Content-Type: ${auto}`)}`);
   }
-  if (b.mode === "json" || b.mode === "text" || b.mode === "xml") {
+  if (!carriesBody) {
+    // nothing to send
+  } else if (b.mode === "json" || b.mode === "text" || b.mode === "xml") {
     if (b.raw) parts.push(`--data-raw ${shellArg(b.raw)}`);
   } else if (b.mode === "form-urlencoded" && b.urlencoded) {
     // Not `--data-urlencode` per field: curl encodes a space as `+` where the

@@ -116,14 +116,44 @@ describe("what the sweep turned up", () => {
     expect(generateSnippet(r, "python-requests")).toContain("a=1; b=2");
   });
 
-  test("a GET that carries a body still exports as a GET", () => {
-    // Any data flag makes curl default to POST.
+  /* The app's proxy drops the body of a GET or a HEAD outright, so a snippet
+     that sends one does something the app never does — and fetch and
+     node-fetch refuse to run at all with one. */
+  test("a GET does not export a body the app would drop", () => {
     const r = request({ method: "GET", body: { mode: "json", raw: '{"a":1}', urlencoded: [], formdata: [], graphql: { query: "", variables: "" } } as never });
-    expect(toCurl(r)).toContain("-X GET");
+    const out = toCurl(r);
+    expect(out).not.toContain("--data-raw");
+    // and so no data flag to make curl default to POST
+    expect(out).not.toContain("-X GET");
   });
 
-  test("a GET with no body does not gain a redundant -X", () =>
-    expect(toCurl(request({}))).not.toContain("-X GET"));
+  test("a HEAD does not export one either", () => {
+    const r = request({ method: "HEAD", body: { mode: "json", raw: '{"a":1}', urlencoded: [], formdata: [], graphql: { query: "", variables: "" } } as never });
+    expect(toCurl(r)).not.toContain("--data-raw");
+  });
+
+  for (const lang of ["fetch", "node-fetch", "python-requests", "go", "httpie"] as const) {
+    test(`the ${lang} snippet drops a GET body too`, () => {
+      const r = request({ method: "GET", body: { mode: "json", raw: '{"MARKER":1}', urlencoded: [], formdata: [], graphql: { query: "", variables: "" } } as never });
+      expect(generateSnippet(r, lang)).not.toContain("MARKER");
+    });
+  }
+
+  test("a POST still keeps its body (control)", () => {
+    const r = request({ method: "POST", body: { mode: "json", raw: '{"a":1}', urlencoded: [], formdata: [], graphql: { query: "", variables: "" } } as never });
+    expect(toCurl(r)).toContain("--data-raw");
+  });
+
+  /* Every client falls back to its own default for an unlabelled string body —
+     curl called it a form post, HTTPie called it JSON — so the type the app
+     sends is stated explicitly. */
+  test("a text body carries the type the app sends", () => {
+    const r = request({ method: "POST", body: { mode: "text", raw: "hello", urlencoded: [], formdata: [], graphql: { query: "", variables: "" } } as never });
+    expect(toCurl(r)).toContain("Content-Type: text/plain;charset=UTF-8");
+    for (const lang of ["fetch", "python-requests", "go", "httpie"] as const) {
+      expect(generateSnippet(r, lang), lang).toContain("text/plain;charset=UTF-8");
+    }
+  });
 
   test("a form text value starting with @ is not read off the user's disk", () => {
     const r = request({ method: "POST", body: { mode: "form-data", raw: "", urlencoded: [],

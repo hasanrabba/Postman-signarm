@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Execution differential for the Snippets tab: generate the snippet, RUN it,
  * and compare what the server received against what the app itself sends.
@@ -14,7 +15,6 @@
  */
 import { describe, test, expect, vi, afterAll } from "vitest";
 import { execFileSync } from "node:child_process";
-import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -22,26 +22,24 @@ import path from "node:path";
 const OUT = process.env.ECHO_OUT || "";
 const BASE = process.env.ECHO_BASE || "http://127.0.0.1:8899";
 
+/**
+ * The app side goes through the REAL proxy route, not a hand-rolled HTTP call.
+ * It used to speak node:http directly, and that quietly hid two differences
+ * the route actually makes: it drops the body of a GET, and fetch labels a
+ * string body text/plain — so the harness was comparing the snippets against
+ * something the app does not do.
+ */
 vi.mock("@/lib/transport", () => ({
-  sendProxy: vi.fn((p: { method: string; url: string; headers: Record<string, string>; body?: string }) =>
-    new Promise((resolve, reject) => {
-      const u = new URL(p.url);
-      const req = http.request(
-        { host: u.hostname, port: u.port, path: u.pathname + u.search, method: p.method, headers: p.headers },
-        (res) => {
-          const c: Buffer[] = [];
-          res.on("data", (d) => c.push(d));
-          res.on("end", () => resolve({
-            status: res.statusCode, statusText: "OK", headers: {},
-            body: Buffer.concat(c).toString(), elapsedMs: 1, sizeBytes: 2,
-          }));
-        }
-      );
-      req.on("error", reject);
-      if (p.body !== undefined) req.write(p.body);
-      req.end();
-    })
-  ),
+  sendProxy: vi.fn(async (p: { method: string; url: string; headers: Record<string, string>; body?: string }) => {
+    process.env.SIGNAL_PROXY_ALLOW_LOCAL = "1";
+    const { POST } = await import("@/app/api/proxy/route");
+    const res = await POST(new Request("http://proxy.test/api/proxy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(p),
+    }) as never);
+    return await res.json();
+  }),
   registerMock: vi.fn(async () => ({ ok: true })),
   mockBaseUrl: vi.fn(async () => undefined),
 }));
@@ -232,9 +230,16 @@ describe.skipIf(!OUT)("a generated snippet sends what the app sends", () => {
           expect(snippetRan!.method).toBe(app!.method);
           expect(snippetRan!.url).toBe(app!.url);
           expect(snippetRan!.body).toBe(app!.body);
-          // Every header the app sends must arrive; a client's own defaults may
-          // be extra.
+          // Only the headers the REQUEST asks for, plus the two the app
+          // derives. Every HTTP client adds a few of its own — accept,
+          // user-agent, accept-encoding — and holding a snippet to another
+          // stack's defaults would be noise, not fidelity.
+          const own = new Set([
+            ...req.headers.filter((h) => h.enabled && h.key).map((h) => h.key.toLowerCase()),
+            "content-type", "authorization",
+          ]);
           for (const [k, v] of Object.entries(app!.headers)) {
+            if (!own.has(k)) continue;
             expect(snippetRan!.headers[k], `header ${k}`).toBe(v);
           }
         }, 200_000);

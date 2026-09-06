@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { lookup } from "node:dns/promises";
 import { isBlockedHostname, isBlockedIp, normalizeHostname } from "@/lib/ssrf";
+import { sendsBody } from "@/lib/wire";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -172,7 +173,7 @@ export async function POST(req: NextRequest) {
     let method = (payload.method || "GET").toUpperCase();
     let outHeaders = filterRequestHeaders(payload.headers ?? {});
     let body =
-      !["GET", "HEAD"].includes(method) && payload.body !== undefined && payload.body !== ""
+      sendsBody(method) && payload.body !== undefined && payload.body !== ""
         ? payload.body
         : undefined;
 

@@ -303,6 +303,12 @@ export function defaultContentType(mode: SignalRequest["body"]["mode"]): string 
   switch (mode) {
     case "json": case "graphql": return "application/json";
     case "xml": return "application/xml";
+    // fetch() labels a string body text/plain;charset=UTF-8 when nothing else
+    // says otherwise, so that is what the web build already puts on the wire.
+    // Saying it out loud makes the desktop build and all six snippets agree
+    // with it, instead of each falling back to its own default — curl called a
+    // text body a form post and HTTPie called it JSON.
+    case "text": return "text/plain;charset=UTF-8";
     case "form-urlencoded": return "application/x-www-form-urlencoded";
     default: return undefined;
   }
