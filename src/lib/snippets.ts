@@ -2,6 +2,7 @@ import type { SignalRequest } from "./types";
 import { applyAuth } from "./auth";
 import { toCurl } from "./curl";
 import { appendQuery, buildQuery } from "./url";
+import { defaultContentType } from "./executor";
 import { shellArg } from "./shell";
 
 export type SnippetLang = "curl" | "fetch" | "node-fetch" | "python-requests" | "go" | "httpie";
@@ -23,10 +24,7 @@ function bodyString(req: SignalRequest): string | undefined {
   if (b.mode === "none") return undefined;
   if (b.mode === "json" || b.mode === "text" || b.mode === "xml") return b.raw || "";
   if (b.mode === "form-urlencoded") {
-    return (b.urlencoded ?? [])
-      .filter((k) => k.enabled && k.key)
-      .map((k) => `${encodeURIComponent(k.key)}=${encodeURIComponent(k.value)}`)
-      .join("&");
+    return buildQuery(b.urlencoded ?? []);
   }
   if (b.mode === "graphql") {
     let variables: unknown = {};
@@ -48,17 +46,37 @@ function formFields(req: SignalRequest) {
   return fields.length ? fields : undefined;
 }
 
+/**
+ * The headers a generated snippet must carry: the request's own, plus the
+ * Content-Type the app adds for the body mode. Without it the copied code
+ * meant something different from the request it came from — a JSON body went
+ * out unlabelled, and the API that answered in Signal returned 415.
+ *
+ * Multipart is left out: every client generates its own boundary.
+ */
+function snippetHeaders(req: SignalRequest, multipart: boolean): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const h of req.headers) if (h.enabled && h.key) headers[h.key] = h.value;
+  if (multipart) {
+    delete headers[Object.keys(headers).find((k) => k.toLowerCase() === "content-type") ?? ""];
+    return headers;
+  }
+  const auto = defaultContentType(req.body.mode);
+  if (auto && !Object.keys(headers).some((k) => k.toLowerCase() === "content-type")) {
+    headers["Content-Type"] = auto;
+  }
+  return headers;
+}
+
 function urlWithQuery(req: SignalRequest): string {
   return appendQuery(req.url, buildQuery(req.params));
 }
 
 function fetchSnippet(req: SignalRequest, node = false): string {
-  const headers: Record<string, string> = {};
-  for (const h of req.headers) if (h.enabled && h.key) headers[h.key] = h.value;
   const fields = formFields(req);
   // The browser sets the multipart boundary itself; a hand-copied
   // Content-Type would not match the body FormData produces.
-  if (fields) delete headers[Object.keys(headers).find((k) => k.toLowerCase() === "content-type") ?? ""];
+  const headers = snippetHeaders(req, Boolean(fields));
   const body = bodyString(req);
   const init: Record<string, unknown> = { method: req.method, headers };
   if (body !== undefined) init.body = body;
@@ -86,10 +104,8 @@ function fetchSnippet(req: SignalRequest, node = false): string {
 }
 
 function pythonSnippet(req: SignalRequest): string {
-  const headers: Record<string, string> = {};
-  for (const h of req.headers) if (h.enabled && h.key) headers[h.key] = h.value;
   const fields = formFields(req);
-  if (fields) delete headers[Object.keys(headers).find((k) => k.toLowerCase() === "content-type") ?? ""];
+  const headers = snippetHeaders(req, Boolean(fields));
   const body = bodyString(req);
   const pyFiles = fields
     ? `files = {${fields
@@ -146,10 +162,9 @@ function goSnippet(req: SignalRequest): string {
         : ["    var body io.Reader = nil"]),
     `    req, _ := http.NewRequest(${JSON.stringify(req.method)}, ${JSON.stringify(urlWithQuery(req))}, body)`,
   ];
-  for (const h of req.headers) {
-    // multipart.Writer owns the Content-Type: it carries the boundary.
-    if (fields && h.key.toLowerCase() === "content-type") continue;
-    if (h.enabled && h.key) lines.push(`    req.Header.Set(${JSON.stringify(h.key)}, ${JSON.stringify(h.value)})`);
+  // multipart.Writer owns the Content-Type: it carries the boundary.
+  for (const [k, v] of Object.entries(snippetHeaders(req, Boolean(fields)))) {
+    lines.push(`    req.Header.Set(${JSON.stringify(k)}, ${JSON.stringify(v)})`);
   }
   if (fields) lines.push('    req.Header.Set("Content-Type", mw.FormDataContentType())');
   lines.push(
@@ -168,11 +183,9 @@ function httpieSnippet(req: SignalRequest): string {
   const parts: string[] = ["http"];
   if (fields) parts.push("--form");
   parts.push(req.method, shellArg(urlWithQuery(req)));
-  for (const h of req.headers) {
-    if (!h.enabled || !h.key) continue;
-    // HTTPie derives the multipart boundary itself.
-    if (fields && h.key.toLowerCase() === "content-type") continue;
-    parts.push(shellArg(`${h.key}:${h.value}`));
+  // HTTPie derives the multipart boundary itself.
+  for (const [k, v] of Object.entries(snippetHeaders(req, Boolean(fields)))) {
+    parts.push(shellArg(`${k}:${v}`));
   }
   if (fields) {
     for (const f of fields) {

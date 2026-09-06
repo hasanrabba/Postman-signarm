@@ -3,6 +3,7 @@ import type { KeyValue, Method, SignalRequest } from "./types";
 import { base64Utf8, emptyAuth } from "./auth";
 import { autoFlagSecretsOnRequest } from "./secrets";
 import { appendQuery, buildQuery, splitFragment } from "./url";
+import { defaultContentType } from "./executor";
 import { shellArg } from "./shell";
 
 const METHODS: Method[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
@@ -387,6 +388,7 @@ export function parseCurl(cmd: string): SignalRequest | null {
         bodyRaw += (bodyRaw ? "&" : "") + encoded;
         bodyMode = "form-urlencoded";
         isUrlEncoded = true;
+        dataFlag = true;
         if (!explicitMethod) method = "POST";
         break;
       }
@@ -518,6 +520,8 @@ export function parseCurl(cmd: string): SignalRequest | null {
     headers.push({ id: uid("h"), key: "Authorization", value: `Basic ${token}`, enabled: true });
   }
 
+  let liftedBody: KeyValue[] | null = null;
+
   // Detect content type to refine body mode.
   const ct = headers.find((h) => h.key.toLowerCase() === "content-type")?.value || "";
   if (bodyRaw && bodyMode !== "form-data") {
@@ -528,7 +532,8 @@ export function parseCurl(cmd: string): SignalRequest | null {
       // rows on every send. `-d 'plaintext'` is not a form, and came back out
       // as `plaintext=`; a body that is not made of named fields stays raw
       // text so its bytes go out the way curl sent them.
-      bodyMode = looksLikeForm(bodyRaw) ? "form-urlencoded" : "text";
+      liftedBody = liftPairs(bodyRaw);
+      bodyMode = liftedBody ? "form-urlencoded" : "text";
     }
     else if (looksLikeJson(bodyRaw)) bodyMode = "json";
     else if (/^<\?xml|^<[a-zA-Z]/.test(bodyRaw.trim())) bodyMode = "xml";
@@ -568,11 +573,12 @@ export function parseCurl(cmd: string): SignalRequest | null {
   // `curl -G -d 'a=b'` sends a GET with a=b in the query string, not a GET
   // carrying a body. Keeping it as a body meant the server never saw it.
   if (getWithData && bodyRaw) {
-    for (const pair of bodyRaw.split("&")) {
-      if (!pair) continue;
-      const [k, v] = splitOnce(pair, "=");
-      params.push({ id: uid("p"), key: safeDecode(k), value: safeDecode(v), enabled: true });
-    }
+    // Same rule as the URL's own query: only lift into the params table what
+    // can be put back byte for byte. `-G -d 'flag'` gained an equals sign and
+    // `-G -d 'q=a+b'` had its plus re-encoded.
+    const lifted = liftPairs(bodyRaw);
+    if (lifted) params.push(...lifted);
+    else url = appendQuery(url, bodyRaw);
     bodyRaw = "";
     bodyMode = "none";
     isUrlEncoded = false;
@@ -593,17 +599,7 @@ export function parseCurl(cmd: string): SignalRequest | null {
     });
   }
 
-  const urlencoded: KeyValue[] = bodyMode === "form-urlencoded"
-    ? bodyRaw.split("&").filter(Boolean).map((p) => {
-        const [k, v] = splitOnce(p, "=");
-        return {
-          id: uid("u"),
-          key: safeDecode(k),
-          value: safeDecode(v),
-          enabled: true,
-        };
-      })
-    : [];
+  const urlencoded: KeyValue[] = bodyMode === "form-urlencoded" ? (liftedBody ?? []) : [];
 
   return autoFlagSecretsOnRequest({
     id: uid("req"),
@@ -626,15 +622,24 @@ export function parseCurl(cmd: string): SignalRequest | null {
 }
 
 /**
- * Is every `&`-separated segment actually a named field? `-d 'plaintext'` is
- * not a form, and rendering it as key/value rows means re-serialising it as
- * `plaintext=` on every send — which is not what curl put on the wire.
- * A second `=` inside a value is fine: `jwt=a.b=c` re-encodes to
- * `jwt=a.b%3Dc`, which every form parser decodes back to the same pair.
+ * Split an `&`-separated body or query into key/value rows, or return null if
+ * showing it that way would change what goes on the wire.
+ *
+ * Rows are re-serialised on every send, so this only holds when every segment
+ * is a named field AND rebuilding reproduces the original bytes. `-d
+ * 'plaintext'` came back out as `plaintext=`, and `-d 'a=1+2'` as `a=1%2B2` —
+ * a literal plus where curl's bytes mean a space, which is a different value
+ * to every form parser.
  */
-function looksLikeForm(raw: string): boolean {
+function liftPairs(raw: string): KeyValue[] | null {
   const pairs = raw.split("&").filter(Boolean);
-  return pairs.length > 0 && pairs.every((p) => p.includes("=") && !p.startsWith("="));
+  if (!pairs.length) return null;
+  if (!pairs.every((p) => p.includes("=") && !p.startsWith("="))) return null;
+  const rows = pairs.map((p) => {
+    const [k, v] = splitOnce(p, "=");
+    return { id: uid("u"), key: safeDecode(k), value: safeDecode(v), enabled: true };
+  });
+  return buildQuery(rows) === raw ? rows : null;
 }
 
 function looksLikeJson(s: string): boolean {
@@ -645,16 +650,33 @@ function looksLikeJson(s: string): boolean {
 
 export function toCurl(req: SignalRequest): string {
   const parts: string[] = ["curl"];
-  if (req.method !== "GET") parts.push(`-X ${req.method}`);
+  // `-X HEAD` makes curl wait for a body that a HEAD response never sends, so
+  // the exported command sat there until the user killed it. `-I` is the
+  // spelling that works.
+  if (req.method === "HEAD") parts.push("-I");
+  else if (req.method !== "GET") parts.push(`-X ${req.method}`);
   const url = appendQuery(req.url, buildQuery(req.params));
   parts.push(shellArg(url));
+  let hasContentType = false;
   for (const h of req.headers) {
     if (!h.enabled || !h.key) continue;
+    if (h.key.toLowerCase() === "content-type") hasContentType = true;
     // The key shares the quoted argument with the value, so a quote in the
     // key used to close the string early and mangle the whole command.
-    parts.push(`-H ${shellArg(`${h.key}: ${h.value}`)}`);
+    // `-H 'X: '` makes curl DROP the header rather than send it empty; the
+    // trailing-semicolon spelling is the one that sends it.
+    parts.push(h.value === ""
+      ? `-H ${shellArg(`${h.key};`)}`
+      : `-H ${shellArg(`${h.key}: ${h.value}`)}`);
   }
   const b = req.body;
+  // curl sets its own type for -F and --data-urlencode; everything else has to
+  // carry the type the app would have sent, or the command means something
+  // different from the request it was copied from.
+  if (!hasContentType && (b.mode === "json" || b.mode === "xml" || b.mode === "graphql")) {
+    const auto = defaultContentType(b.mode);
+    if (auto) parts.push(`-H ${shellArg(`Content-Type: ${auto}`)}`);
+  }
   if (b.mode === "json" || b.mode === "text" || b.mode === "xml") {
     if (b.raw) parts.push(`--data-raw ${shellArg(b.raw)}`);
   } else if (b.mode === "form-urlencoded" && b.urlencoded) {

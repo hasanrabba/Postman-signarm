@@ -47,7 +47,9 @@ vi.mock("@/lib/transport", () => ({
   mockBaseUrl: vi.fn(async () => undefined),
 }));
 
-import { parseCurl } from "@/lib/curl";
+import { parseCurl, toCurl } from "@/lib/curl";
+import { emptyAuth } from "@/lib/auth";
+import type { SignalRequest } from "@/lib/types";
 import { executeRequest } from "@/lib/executor";
 
 const IGNORE = new Set([
@@ -133,6 +135,12 @@ const CASES: [string, string][] = [
   ["an unknown no-arg flag before a scheme-less host", `curl -4 127.0.0.1:${PORT}/a`],
   ["--data-raw keeps a leading @", `curl ${BASE}/a --data-raw '@channel deploy'`],
   ["--form-string keeps a leading @", `curl ${BASE}/a --form-string 'x=@data.json'`],
+  // form / -G round-trip fidelity
+  ["-G with a valueless field", `curl -G ${BASE}/a -d 'flag' -d 'y=2'`],
+  ["-G with a plus in a value", `curl -G ${BASE}/a -d 'q=a+b'`],
+  ["a plus in a form body value", `curl ${BASE}/a -H 'Content-Type: application/x-www-form-urlencoded' -d 'a=1+2'`],
+  ["a semicolon in a form body value", `curl ${BASE}/a -H 'Content-Type: application/x-www-form-urlencoded' -d 'a=1;b=2'`],
+  ["an equals in a form body value", `curl ${BASE}/a -H 'Content-Type: application/x-www-form-urlencoded' -d 'jwt=a.b=c'`],
 ];
 
 describe.skipIf(!OUT)("real curl vs Signal, on the wire", () => {
@@ -189,4 +197,56 @@ describe.skipIf(!OUT)("known divergences", () => {
     // Everything else about the request is identical.
     expect({ ...signal, body: "" }).toEqual({ ...curl, body: "" });
   }, 20_000);
+});
+
+/*
+ * The other direction: what the app sends, against what the command shown in
+ * the cURL tab sends when a person pastes it into their terminal. A request
+ * that worked in Signal came back 415 from the same API, because the exported
+ * command carried no Content-Type and curl labelled the body as form data.
+ */
+function request(over: Partial<SignalRequest>): SignalRequest {
+  return {
+    id: "r", name: "n", method: "GET", url: `${BASE}/a`, headers: [], params: [],
+    auth: emptyAuth(),
+    body: { mode: "none", raw: "", urlencoded: [], formdata: [], graphql: { query: "", variables: "" } },
+    preRequestScript: "", testScript: "",
+    ...over,
+  } as SignalRequest;
+}
+const hdr = (key: string, value: string) => ({ id: key, key, value, enabled: true });
+
+describe.skipIf(!OUT)("the app and its exported command send the same thing", () => {
+  const cases: [string, SignalRequest][] = [
+    ["a JSON body with no explicit Content-Type", request({
+      method: "POST", body: { mode: "json", raw: '{"a":1}', urlencoded: [], formdata: [], graphql: { query: "", variables: "" } },
+    })],
+    ["an XML body", request({
+      method: "POST", body: { mode: "xml", raw: "<a>1</a>", urlencoded: [], formdata: [], graphql: { query: "", variables: "" } },
+    })],
+    ["a GraphQL body", request({
+      method: "POST", body: { mode: "graphql", raw: "", urlencoded: [], formdata: [], graphql: { query: "{ me { id } }", variables: '{"x":1}' } },
+    })],
+    ["a form-urlencoded body", request({
+      method: "POST",
+      body: { mode: "form-urlencoded", raw: "", urlencoded: [hdr("a", "1"), hdr("b", "2")], formdata: [], graphql: { query: "", variables: "" } },
+    })],
+    ["a HEAD request", request({ method: "HEAD" })],
+    ["a header sent deliberately empty", request({ headers: [hdr("X-Trace", "")] })],
+    ["an explicit Content-Type is not doubled", request({
+      method: "POST", headers: [hdr("Content-Type", "application/vnd.api+json")],
+      body: { mode: "json", raw: '{"a":1}', urlencoded: [], formdata: [], graphql: { query: "", variables: "" } },
+    })],
+    ["params and a fragment", request({ url: `${BASE}/a#frag`, params: [hdr("x", "1"), hdr("y", "a b")] })],
+  ];
+
+  for (const [name, req] of cases) {
+    test(name, async () => {
+      clear();
+      await executeRequest(req, { scope: {} });
+      const app = normalize(last());
+      const exported = viaCurl(toCurl(req));
+      expect({ name, ...app }).toEqual({ name, ...exported });
+    }, 20_000);
+  }
 });

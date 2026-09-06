@@ -124,3 +124,38 @@ describe("what is exported matches what is sent", () => {
     expect(generateSnippet(req, "python-requests")).toContain(onTheWire);
   });
 });
+
+/* Key/value rows are re-serialised on every send, so a body or a -G field is
+   only shown as rows when rebuilding reproduces the original bytes. */
+describe("a form body survives import byte for byte", () => {
+  const form = (b: string) =>
+    `curl http://x.test/a -H 'Content-Type: application/x-www-form-urlencoded' -d '${b}'`;
+
+  test("a plus keeps meaning a space", async () =>
+    expect((await wire(form("a=1+2"))).body).toBe("a=1+2"));
+  test("a semicolon is not re-encoded", async () =>
+    expect((await wire(form("a=1;b=2"))).body).toBe("a=1;b=2"));
+  test("an equals inside a value is not re-encoded", async () =>
+    expect((await wire(form("jwt=a.b=c"))).body).toBe("jwt=a.b=c"));
+  test("an ordinary form still becomes rows", async () => {
+    const r = parseCurl(form("a=1&b=2"))!;
+    expect(r.body.mode).toBe("form-urlencoded");
+    expect(r.body.urlencoded!.map((k) => [k.key, k.value])).toEqual([["a", "1"], ["b", "2"]]);
+    expect((await wire(form("a=1&b=2"))).body).toBe("a=1&b=2");
+  });
+});
+
+describe("-G moves the data into the query without rewriting it", () => {
+  test("a valueless field keeps having no value", async () =>
+    expect((await wire("curl -G http://x.test/a -d 'flag' -d 'y=2'")).url)
+      .toBe("http://x.test/a?flag&y=2"));
+  test("a plus is not re-encoded", async () =>
+    expect((await wire("curl -G http://x.test/a -d 'q=a+b'")).url)
+      .toBe("http://x.test/a?q=a+b"));
+  test("an ordinary -G still becomes params", async () => {
+    const r = parseCurl("curl -G http://x.test/a -d 'x=1' -d 'y=2'")!;
+    expect(r.params.map((p) => p.key)).toEqual(["x", "y"]);
+    expect((await wire("curl -G http://x.test/a -d 'x=1' -d 'y=2'")).url)
+      .toBe("http://x.test/a?x=1&y=2");
+  });
+});

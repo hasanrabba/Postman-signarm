@@ -201,15 +201,10 @@ function serializeForProxy(req: SignalRequest) {
   const b = req.body;
   if (b.mode === "json" || b.mode === "text" || b.mode === "xml") {
     body = b.raw ?? "";
-    if (b.mode === "json" && body && !hasHeader(headers, "content-type")) {
-      headers["Content-Type"] = "application/json";
-    }
-    if (b.mode === "xml" && body && !hasHeader(headers, "content-type")) {
-      headers["Content-Type"] = "application/xml";
-    }
+    const auto = defaultContentType(b.mode);
+    if (auto && body && !hasHeader(headers, "content-type")) headers["Content-Type"] = auto;
   } else if (b.mode === "form-urlencoded" && b.urlencoded) {
-    body = b.urlencoded.filter((k) => k.enabled && k.key)
-      .map((k) => `${encodeURIComponent(k.key)}=${encodeURIComponent(k.value)}`).join("&");
+    body = buildQuery(b.urlencoded);
     if (!hasHeader(headers, "content-type"))
       headers["Content-Type"] = "application/x-www-form-urlencoded";
   } else if (b.mode === "form-data" && b.formdata && b.formdata.length > 0) {
@@ -246,6 +241,25 @@ function mergeHeadersInto(req: SignalRequest, actual: Record<string, string>): v
   for (const [k, v] of Object.entries(actual)) {
     if (lowerExisting.has(k.toLowerCase())) continue;
     req.headers.push({ id: `auto_${k}`, key: k, value: v, enabled: true });
+  }
+}
+
+/**
+ * The Content-Type the sender adds for a body mode when the request carries no
+ * header of its own. Exported because the cURL command and the code snippets
+ * shown to the user have to send the same thing the app does — a JSON request
+ * that worked in Signal came back 415 in the terminal, because the exported
+ * command carried no Content-Type and curl labelled it as form data.
+ *
+ * multipart is absent on purpose: its type carries a boundary, and every
+ * client generates its own.
+ */
+export function defaultContentType(mode: SignalRequest["body"]["mode"]): string | undefined {
+  switch (mode) {
+    case "json": case "graphql": return "application/json";
+    case "xml": return "application/xml";
+    case "form-urlencoded": return "application/x-www-form-urlencoded";
+    default: return undefined;
   }
 }
 
