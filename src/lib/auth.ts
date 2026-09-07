@@ -25,10 +25,12 @@ export function applyAuth(req: SignalRequest): SignalRequest {
   const headers: KeyValue[] = [...req.headers];
   const params: KeyValue[] = [...req.params];
 
+  // Marked derived: these are wire artefacts of the auth config, not rows the
+  // user wrote, and anything that reopens a sent request has to tell them apart.
   const pushHeader = (key: string, value: string) =>
-    headers.push({ id: uid("h"), key, value, enabled: true });
+    headers.push({ id: uid("h"), key, value, enabled: true, derived: true });
   const pushParam = (key: string, value: string) =>
-    params.push({ id: uid("p"), key, value, enabled: true });
+    params.push({ id: uid("p"), key, value, enabled: true, derived: true });
 
   switch (auth.type) {
     case "basic": {

@@ -18,7 +18,7 @@ import type {
 } from "./types";
 import { uid } from "./id";
 import { emptyRequest as emptyRequestDefault } from "./defaults";
-import { restoreRedacted } from "./secrets";
+import { redactRequest, restoreRedacted } from "./secrets";
 import { loadSecrets, saveSecrets, hasVault, VaultDecryptError } from "./vault";
 
 export interface TabState {
@@ -102,7 +102,13 @@ interface Store {
       globals?: Record<string, string | null>;
       collection?: Record<string, string | null>;
     },
-    collectionId?: string
+    collectionId?: string,
+    /**
+     * The environment the request was sent AGAINST. Without it the write lands
+     * wherever the picker points when the reply arrives, so switching
+     * environment mid-flight put one environment's token into another.
+     */
+    envId?: string
   ) => void;
 
   // history
@@ -182,9 +188,25 @@ function reconcileTabs(
   keep: (t: TabState) => boolean,
   activeTabId: string | undefined
 ): { tabs: TabState[]; activeTabId: string | undefined } {
+  const wasAt = tabs.findIndex((t) => t.id === activeTabId);
   const next = tabs.filter(keep);
   const stillOpen = next.some((t) => t.id === activeTabId);
-  return { tabs: next, activeTabId: stillOpen ? activeTabId : next[next.length - 1]?.id };
+  return { tabs: next, activeTabId: stillOpen ? activeTabId : neighbourOf(next, wasAt) };
+}
+
+/**
+ * Where to land when the tab you were on goes away: the one that slid into its
+ * place, else the one to its left.
+ *
+ * It used to jump to the last tab in the strip. With two open you never notice;
+ * with forty, closing the fifth threw you to the thirty-ninth — an unrelated
+ * request, with the highlight scrolled off the right edge, so nothing on screen
+ * said where you now were.
+ */
+function neighbourOf(tabs: TabState[], index: number): string | undefined {
+  if (tabs.length === 0) return undefined;
+  const i = Math.max(0, Math.min(index, tabs.length - 1));
+  return tabs[i]?.id;
 }
 
 /**
@@ -270,6 +292,32 @@ function trimForHistory(entry: HistoryEntry): HistoryEntry {
       body: r.body.slice(0, MAX_HISTORY_BODY),
       bodyTruncated: r.body.length,
     },
+  };
+}
+
+/**
+ * The form of a tab that is safe to write to disk.
+ *
+ * Every open tab used to be lost on restart: partialize named six keys and
+ * `tabs` was not one of them, so the request you were still writing — URL,
+ * headers, body, scripts — existed only in memory. History was saved; the work
+ * in front of you was not.
+ *
+ * It is stored REDACTED, which is the posture the README already documents for
+ * history ("raw request stays in-memory on the active tab"). A tab holds the
+ * request verbatim, bearer token and all, so persisting it as-is would write
+ * live credentials to unencrypted localStorage on every keystroke. `merge`
+ * restores them from the collection on the way back in.
+ *
+ * The response, its tests and logs are dropped: they are a result, not work,
+ * and a 32MB body in every tab is how the last quota failure happened.
+ */
+function persistableTab(t: TabState): TabState {
+  return {
+    id: t.id,
+    requestId: t.requestId,
+    dirty: t.dirty,
+    draft: redactRequest(t.draft),
   };
 }
 
@@ -524,6 +572,12 @@ export const useStore = create<Store>()(
           tabs: reconciled.tabs.map((t) => {
             const r = reverted.requests[t.requestId];
             if (!r) return t;
+            // A tab the user had not touched now shows the reverted request.
+            // It used to keep the pre-revert copy and merely gain an
+            // unsaved-changes dot — on a tab the user changed nothing in — and
+            // the Save that dot invites wrote the reverted-away version
+            // straight back over the revert, unprompted.
+            if (!t.dirty) return { ...t, draft: { ...r } };
             return { ...t, dirty: JSON.stringify(r) !== JSON.stringify(t.draft) };
           }),
         };
@@ -573,9 +627,12 @@ export const useStore = create<Store>()(
         set((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.id }));
       },
       closeTab: (tabId) => set((s) => {
+        const idx = s.tabs.findIndex((t) => t.id === tabId);
         const tabs = s.tabs.filter((t) => t.id !== tabId);
-        const activeTabId = s.activeTabId === tabId ? tabs[tabs.length - 1]?.id : s.activeTabId;
-        return { tabs, activeTabId };
+        return {
+          tabs,
+          activeTabId: s.activeTabId === tabId ? neighbourOf(tabs, idx) : s.activeTabId,
+        };
       }),
       setActiveTab: (tabId) => set({ activeTabId: tabId }),
       updateDraft: (tabId, patch) => set((s) => ({
@@ -629,17 +686,23 @@ export const useStore = create<Store>()(
         tabs: s.tabs.map((t) => t.id === tabId ? { ...t, sending } : t),
       })),
 
-      applyScriptUpdates: (updates, collectionId) => set((s) => {
+      applyScriptUpdates: (updates, collectionId, envId) => set((s) => {
         const next: Partial<Store> = {};
         if (hasKeys(updates.globals)) {
           next.globals = mergeVars(s.globals, updates.globals!);
         }
-        if (hasKeys(updates.env) && s.activeEnvId) {
-          const env = s.environments[s.activeEnvId];
+        // The environment the request was sent against, not whichever one the
+        // picker points at now. This runs after the await, so flipping the
+        // sidebar radio while a login was in flight wrote the staging token
+        // into Production, and the next request against Production went out
+        // with a staging credential and nothing reported the cross-over.
+        const target = envId ?? s.activeEnvId;
+        if (hasKeys(updates.env) && target) {
+          const env = s.environments[target];
           if (env) {
             next.environments = {
               ...s.environments,
-              [s.activeEnvId]: { ...env, variables: mergeVars(env.variables, updates.env!) },
+              [target]: { ...env, variables: mergeVars(env.variables, updates.env!) },
             };
           }
         }
@@ -667,7 +730,24 @@ export const useStore = create<Store>()(
         if (!entry) return;
         const loc = s.findRequestLocation(entry.request.id);
         const live = loc ? s.collections[loc.collectionId]?.requests[entry.request.id] : undefined;
-        s.openDraft(restoreRedacted(entry.request, live));
+        const restored = restoreRedacted(entry.request, live);
+        s.openDraft({
+          ...restored,
+          // A fresh id, so a replay is a scratch copy. emptyRequest spreads its
+          // overrides after the id it generates, so the replay used to keep the
+          // SAVED request's id — and Save, which the tab arrives already
+          // inviting, wrote the old snapshot straight over the live request.
+          id: uid("req"),
+          // Drop the Authorization row applyAuth materialised on the way out.
+          // History stores it redacted and restoreRedacted has nothing to match
+          // it against, so it came back as a literal "[REDACTED]" row on top of
+          // the auth config — and combineHeaders joins same-named headers, so
+          // every send from the replay went out with
+          // `Authorization: [REDACTED], Bearer <token>` and a 401 nobody could
+          // explain.
+          headers: restored.headers.filter((h) => !h.derived),
+          params: restored.params.filter((p) => !p.derived),
+        });
       },
 
       unlockVault: async (passphrase) => {
@@ -765,7 +845,42 @@ export const useStore = create<Store>()(
         history: s.history,
         mocks: s.mocks,
         activeEnvId: s.activeEnvId,
+        tabs: s.tabs.map(persistableTab),
+        activeTabId: s.activeTabId,
       }),
+      /**
+       * Put the credentials back on the way in.
+       *
+       * The stored copy is redacted, so a tab on a saved request has its real
+       * values matched back from the collection — exactly what replaying a
+       * history entry does. A tab that was never saved has no source to
+       * restore from, so its credential rows come back as [REDACTED] and stay
+       * visibly empty rather than silently wrong.
+       */
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<Store>;
+        const collections = p.collections ?? current.collections;
+        const findLive = (id: string) => {
+          for (const c of Object.values(collections)) {
+            const r = c.requests[id];
+            if (r) return r;
+          }
+          return undefined;
+        };
+        // Only when there is nothing open. Rehydration restores a store that
+        // starts empty; page.tsx calls it on mount, and adopting the stored
+        // tabs unconditionally would replace live ones — throwing away the
+        // response on screen and re-redacting credentials already in memory.
+        if (current.tabs.length > 0) {
+          return { ...current, ...p, tabs: current.tabs, activeTabId: current.activeTabId };
+        }
+        const tabs = (p.tabs ?? []).map((t) => ({
+          ...t,
+          draft: restoreRedacted(t.draft, findLive(t.draft.id)),
+        }));
+        const activeTabId = tabs.some((t) => t.id === p.activeTabId) ? p.activeTabId : tabs.at(-1)?.id;
+        return { ...current, ...p, tabs, activeTabId };
+      },
     }
   )
 );

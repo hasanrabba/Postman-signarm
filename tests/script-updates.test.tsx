@@ -259,11 +259,12 @@ describe("revertCollection reconciles tabs", () => {
     expect(useStore.getState().tabs[0].requestId).toBe(keep);
   });
 
-  test("flags a surviving tab dirty when the revert changed it underneath", () => {
+  test("a tab with nothing unsaved in it shows the reverted request", () => {
     const { cid, keep, vid } = setup();
     useStore.getState().openRequest(cid, keep);
     const tabId = useStore.getState().tabs[0].id;
-    // Edit and save, so the stored request now differs from the snapshot.
+    // Edit and save, so the stored request now differs from the snapshot and
+    // the tab holds no unsaved work of its own.
     useStore.getState().updateDraft(tabId, { url: "https://changed.example.com" });
     useStore.getState().saveTabInPlace(tabId);
     expect(useStore.getState().tabs[0].dirty).toBe(false);
@@ -271,6 +272,25 @@ describe("revertCollection reconciles tabs", () => {
     useStore.getState().revertCollection(cid, vid);
 
     expect(useStore.getState().collections[cid].requests[keep].url).toBe("https://a.example.com");
+    // This used to keep the pre-revert copy and merely gain an
+    // unsaved-changes dot — on a tab the user had changed nothing in — and the
+    // Save that dot invites wrote the reverted-away version straight back over
+    // the revert, unprompted. There was no way to see what you reverted to
+    // short of noticing the problem and closing the tab.
+    expect(useStore.getState().tabs[0].draft.url).toBe("https://a.example.com");
+    expect(useStore.getState().tabs[0].dirty).toBe(false);
+  });
+
+  test("a tab with unsaved work keeps it, and is flagged against the reverted copy", () => {
+    const { cid, keep, vid } = setup();
+    useStore.getState().openRequest(cid, keep);
+    const tabId = useStore.getState().tabs[0].id;
+    useStore.getState().updateDraft(tabId, { url: "https://still-typing.example.com" });
+
+    useStore.getState().revertCollection(cid, vid);
+
+    // Unsaved work is never taken away by something happening elsewhere.
+    expect(useStore.getState().tabs[0].draft.url).toBe("https://still-typing.example.com");
     expect(useStore.getState().tabs[0].dirty).toBe(true);
   });
 

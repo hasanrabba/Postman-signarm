@@ -69,6 +69,11 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
 
   const send = useCallback(async () => {
     setTabSending(tab.id, true);
+    // Which environment this send is against. Read now, because everything
+    // below the await runs at reply time, by which point the user may have
+    // switched — and a script's sg.env.set was landing in whichever
+    // environment the picker had moved to.
+    const sentAgainstEnvId = activeEnvId;
     try {
       const scope = {
         global: globals,
@@ -99,7 +104,9 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
           globals: result.globalUpdates,
           collection: result.collectionUpdates,
         },
-        collection?.id
+        collection?.id,
+        // Captured before the send, not read after it.
+        sentAgainstEnvId
       );
       setTabResponse(tab.id, result.response, result.tests, logs);
       // Redact before persisting to history: the raw Authorization

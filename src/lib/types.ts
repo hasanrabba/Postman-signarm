@@ -11,6 +11,14 @@ export interface KeyValue {
   enabled: boolean;
   description?: string;
   /**
+   * Materialised by applyAuth on the way to the wire — an Authorization header
+   * built from the request's auth config, not a row the user typed. History
+   * keeps them so it shows what was actually sent; a replay drops them, or the
+   * redacted copy comes back as a second `Authorization: [REDACTED]` row and
+   * every later send goes out with both.
+   */
+  derived?: boolean;
+  /**
    * When true, the UI masks the value behind a reveal toggle and redacts
    * it from history entries and console logs. Auto-applied to well-known
    * credential header names during cURL import.

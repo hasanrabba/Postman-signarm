@@ -15,7 +15,7 @@ import type { SignalResponse, SignalRequest, TestResult } from "@/lib/types";
  * use it — matching Postman's runner semantics.
  */
 export function Runner({ collectionId, onClose }: { collectionId: string; onClose: () => void }) {
-  const { collections, environments, activeEnvId, globals, secrets } = useStore();
+  const { collections, environments, activeEnvId, globals, secrets, applyScriptUpdates } = useStore();
   const col = collections[collectionId];
   // Registered as a layer so the request underneath does not answer keys
   // through it.
@@ -77,6 +77,16 @@ export function Runner({ collectionId, onClose }: { collectionId: string; onClos
         }]);
       }
     }
+    // Keep what the run's scripts wrote. They were threaded through the rest
+    // of the run — which is why chaining inside a run works — and then dropped
+    // on the floor, so a run that captured a token left the environment empty
+    // and the follow-up request you sent from its tab went out with a literal
+    // {{tok}} in the URL. RequestBuilder.send has always persisted these.
+    applyScriptUpdates(
+      { env: envOverrides, globals: globalOverrides, collection: collectionOverrides },
+      collectionId,
+      activeEnvId
+    );
     setRunning(false);
   };
 

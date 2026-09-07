@@ -172,7 +172,7 @@ frontend escalating into the host.
 
 | Layer | Mitigation |
 |---|---|
-| Data at rest | `KeyValue.secret` flag masks tokens in the UI; reveal toggle per row. History entries are **redacted** before being persisted to localStorage — Authorization, Cookie, X-API-Key, Bearer tokens, Basic creds, OAuth tokens, and common JSON body keys (`password`, `token`, `api_key`, …) are replaced with `[REDACTED]`. Raw request stays in-memory on the active tab for immediate replay. |
+| Data at rest | `KeyValue.secret` flag masks tokens in the UI; reveal toggle per row. History entries **and open tabs** are **redacted** before being persisted to localStorage — Authorization, Cookie, X-API-Key, Bearer tokens, Basic creds, OAuth tokens, and common JSON body keys (`password`, `token`, `api_key`, …) are replaced with `[REDACTED]`. Raw credentials stay in-memory: a restored tab has its values matched back from the collection it came from, and an unsaved draft's credential rows come back visibly `[REDACTED]` rather than silently wrong. Response bodies are not persisted with tabs at all. |
 | cURL import | `Authorization`, `Cookie`, `X-API-Key` and friends are **auto-flagged as secret** so pasted tokens are masked the moment they land in the UI. |
 | Proxy input | Rust `proxy_fetch` rejects URLs >4 KB, bodies >16 MB, and >256 headers; header values are capped at 8 KB. Method is allowlisted to GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS. |
 | Proxy response | Hop-by-hop and framing headers stripped (Content-Encoding, Content-Length, Transfer-Encoding, Connection, Keep-Alive, TE, Trailer, Upgrade). Forbidden request headers (Host, Cookie sent by default, etc.) are filtered. |
