@@ -16,8 +16,10 @@ launcher/payload/*.dll
 installer/staging
 installer/SignarmSignal-Setup.exe
 
-# QA sweep scratch: subagents write throwaway probes here
+# QA sweep scratch: subagents write throwaway probes here. Both prefixes —
+# _probe_ for a finder's own repro, _refute_ for a verifier's counter-test.
 tests/_probe_*
+tests/_refute_*
 
 # snippet execution harness scratch (cleaned up by the test, ignored if it dies)
 .snip-*
