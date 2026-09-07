@@ -80,7 +80,12 @@ export default function Home() {
               <RequestBuilder tab={active} />
             </div>
             <div className="border-t border-signal-border flex-1 min-h-0 flex flex-col">
-              <ResponseViewer tab={active} />
+              {/* Keyed by tab: the viewer holds which pane you are on and whether a
+                  binary body is revealed as text, and one shared instance leaked
+                  all of it — a new request's first response landed on the pane you
+                  last used in a different tab, and a PNG you peeked at as text
+                  turned every other tab's binary body into mojibake. */}
+              <ResponseViewer key={active.id} tab={active} />
             </div>
           </div>
         ) : (

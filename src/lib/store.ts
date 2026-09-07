@@ -248,6 +248,31 @@ function newCollection(name: string): Collection {
   };
 }
 
+/**
+ * The most a single history entry's body may take up on disk.
+ *
+ * History is persisted, and a response body went into it whole. The proxy
+ * accepts up to 32MB — roughly six times a browser's entire per-origin
+ * localStorage budget — so one large response made every save from then on
+ * throw QuotaExceeded. The poisoned entry stayed in state, so it was not one
+ * failed save: every collection and environment created afterwards silently
+ * failed to persist too, and the user lost all of it on reload.
+ */
+const MAX_HISTORY_BODY = 64 * 1024;
+
+function trimForHistory(entry: HistoryEntry): HistoryEntry {
+  const r = entry.response;
+  if (!r || r.body.length <= MAX_HISTORY_BODY) return entry;
+  return {
+    ...entry,
+    response: {
+      ...r,
+      body: r.body.slice(0, MAX_HISTORY_BODY),
+      bodyTruncated: r.body.length,
+    },
+  };
+}
+
 export const useStore = create<Store>()(
   persist(
     (set, get) => ({
@@ -634,7 +659,7 @@ export const useStore = create<Store>()(
         return next;
       }),
 
-      pushHistory: (entry) => set((s) => ({ history: [entry, ...s.history].slice(0, 200) })),
+      pushHistory: (entry) => set((s) => ({ history: [trimForHistory(entry), ...s.history].slice(0, 200) })),
       clearHistory: () => set({ history: [] }),
       openFromHistory: (entryId) => {
         const s = get();

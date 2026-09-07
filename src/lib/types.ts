@@ -88,9 +88,22 @@ export interface Environment {
 export interface SignalResponse {
   status: number;
   statusText: string;
+  /** Flat map for scripts. Repeats are joined — see headerMap in lib/body.ts. */
   headers: Record<string, string>;
+  /**
+   * Every header line the server sent, in order, repeats intact. A plain map
+   * cannot hold two Set-Cookie headers, and the one it dropped was the session
+   * cookie; the headers pane reads this instead.
+   */
+  headerList?: Array<[string, string]>;
   body: string;
   bodyIsBase64?: boolean;
+  /**
+   * Set on a history copy whose body was cut down before being persisted, to
+   * the original length. History is saved to localStorage, and one 32MB body
+   * used to break saving for everything else, permanently.
+   */
+  bodyTruncated?: number;
   elapsedMs: number;
   sizeBytes: number;
   timings?: Record<string, number>;

@@ -25,6 +25,12 @@ pub struct ProxyResponse {
     pub status: u16,
     pub status_text: String,
     pub headers: std::collections::HashMap<String, String>,
+    /// Every header line the server sent, in order, repeats intact. The map
+    /// above is a `HashMap`, so two `Set-Cookie` lines collapsed to whichever
+    /// one happened to be inserted last — and the one that survived was the
+    /// CSRF cookie, not the session cookie. Its iteration order is arbitrary
+    /// too, so the pane reordered itself between launches.
+    pub header_list: Vec<(String, String)>,
     pub body: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub body_is_base64: bool,
@@ -43,6 +49,7 @@ fn err(status_text: &str, error: String, elapsed: u128) -> ProxyResponse {
         status: 0,
         status_text: status_text.to_string(),
         headers: Default::default(),
+        header_list: Vec::new(),
         body: String::new(),
         body_is_base64: false,
         elapsed_ms: elapsed,
@@ -95,18 +102,124 @@ fn filter_request_headers(
         .collect()
 }
 
+/// Subtypes that are text even though they are not under `text/`.
+const TEXT_SUBTYPES: &[&str] = &[
+    "json", "xml", "javascript", "ecmascript", "x-javascript",
+    "x-www-form-urlencoded", "graphql", "graphql-response",
+    "yaml", "x-yaml", "x-ndjson", "ndjson", "jsonl",
+    "csv", "x-csv", "sql", "x-sh", "x-httpd-php", "rtf",
+];
+
+/// Types that are text but fit no rule.
+const TEXT_EXACT: &[&str] = &["image/svg+xml", "application/x-empty"];
+
+/// Is a body with this content-type readable as text?
+///
+/// The old version enumerated exact subtypes, so every media type using an
+/// RFC 6839 structured suffix — `application/soap+xml` (all of SOAP),
+/// `application/hal+json`, `application/atom+xml`, `image/svg+xml` — was
+/// declared binary and hidden behind the "Binary response" card.
+///
+/// Note what is no longer here: an empty content-type. It used to count as
+/// text, which is how a PNG served without one was run through a lossy UTF-8
+/// decode and shown as mojibake, with no Download button because nothing knew
+/// it was binary. An absent type means "we don't know", and the caller sniffs.
 fn is_text_content_type(ct: &str) -> bool {
     let lc = ct.to_ascii_lowercase();
-    lc.is_empty()
-        || lc.starts_with("text/")
-        || lc.starts_with("application/json")
-        || lc.starts_with("application/xml")
-        || lc.starts_with("application/javascript")
-        || lc.starts_with("application/x-www-form-urlencoded")
-        || lc.starts_with("application/graphql")
-        || lc.starts_with("application/ld+json")
-        || lc.starts_with("application/problem+json")
-        || lc.starts_with("application/vnd.api+json")
+    let mime = lc.split(';').next().unwrap_or("").trim();
+    let Some((ty, subtype)) = mime.split_once('/') else { return false };
+    if ty.is_empty() || subtype.is_empty() { return false; }
+    if TEXT_EXACT.contains(&mime) { return true; }
+    if ty == "text" { return true; }
+    if ty != "application" { return false; }
+    if TEXT_SUBTYPES.contains(&subtype) { return true; }
+    match subtype.rsplit_once('+') {
+        Some((_, suffix)) => TEXT_SUBTYPES.contains(&suffix),
+        None => false,
+    }
+}
+
+/// The charset parameter, lowercased, or empty when the server named none.
+fn charset_of(ct: &str) -> String {
+    for part in ct.split(';').skip(1) {
+        let part = part.trim();
+        if let Some(rest) = part.strip_prefix("charset=").or_else(|| part.strip_prefix("charset =")) {
+            return rest.trim().trim_matches('"').to_ascii_lowercase();
+        }
+        let lower = part.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("charset") {
+            let rest = rest.trim_start();
+            if let Some(v) = rest.strip_prefix('=') {
+                return v.trim().trim_matches('"').to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/// Decode a text body in the charset the server declared.
+///
+/// Returns `None` when we cannot do it faithfully, and the caller keeps the
+/// bytes as base64 instead. Everything used to go through
+/// `String::from_utf8_lossy`, so a `text/plain; charset=iso-8859-1` response
+/// came back with every accented character replaced by U+FFFD and no way to
+/// recover the original — the body was destroyed before the viewer saw it.
+///
+/// No `encoding_rs` here, so the multi-byte legacy encodings (shift_jis, gbk,
+/// big5, euc-kr) are deliberately NOT guessed at: they take the base64 path,
+/// where the user can still download the true bytes.
+fn decode_text(bytes: &[u8], charset: &str) -> Option<String> {
+    match charset {
+        "" | "utf-8" | "utf8" | "us-ascii" | "ascii" => {
+            // Strip a UTF-8 BOM: left in place it broke JSON.parse, so the
+            // pretty checkbox silently did nothing and every test script's
+            // sg.response.json() came back undefined.
+            let body = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF][..]).unwrap_or(bytes);
+            Some(String::from_utf8_lossy(body).into_owned())
+        }
+        "iso-8859-1" | "latin1" | "iso8859-1" | "iso_8859-1" | "cp819" => {
+            // Latin-1 maps 1:1 onto the first 256 code points.
+            Some(bytes.iter().map(|&b| b as char).collect())
+        }
+        "windows-1252" | "cp1252" => Some(bytes.iter().map(|&b| decode_cp1252(b)).collect()),
+        "utf-16" | "utf-16le" | "utf16" | "utf16le" => decode_utf16(bytes, true),
+        "utf-16be" | "utf16be" => decode_utf16(bytes, false),
+        _ => None,
+    }
+}
+
+/// The 27 code points where windows-1252 differs from latin-1 (0x80..=0x9F).
+fn decode_cp1252(b: u8) -> char {
+    const HIGH: [u16; 32] = [
+        0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+        0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+        0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+        0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
+    ];
+    if (0x80..=0x9F).contains(&b) {
+        char::from_u32(HIGH[(b - 0x80) as usize] as u32).unwrap_or('\u{FFFD}')
+    } else {
+        b as char
+    }
+}
+
+fn decode_utf16(bytes: &[u8], little: bool) -> Option<String> {
+    if bytes.len() % 2 != 0 { return None; }
+    let mut units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| if little { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) })
+        .collect();
+    // A BOM here is a byte-order mark, not content.
+    if units.first() == Some(&0xFEFF) { units.remove(0); }
+    Some(String::from_utf16_lossy(&units))
+}
+
+/// Does this look like text when nobody said what it is?
+///
+/// Strict UTF-8 is a good detector: real binary formats fail it within a few
+/// bytes, and a body that passes it is genuinely text.
+fn sniff_is_text(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes).is_ok()
 }
 
 /// SSRF guard.
@@ -376,17 +489,27 @@ pub async fn proxy_fetch(payload: ProxyPayload) -> Result<ProxyResponse, String>
         let u = res.url().to_string();
         if u != parsed.to_string() { Some(u) } else { None }
     };
-    let mut out_headers = std::collections::HashMap::new();
+    let mut out_headers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut header_list: Vec<(String, String)> = Vec::new();
     let mut content_type = String::new();
     for (k, v) in res.headers().iter() {
         let name = k.as_str().to_string();
         let lower = name.to_ascii_lowercase();
         if STRIP_RESPONSE_HEADERS.contains(&lower.as_str()) { continue; }
         let val = v.to_str().unwrap_or("").to_string();
-        if lower == "content-type" {
+        if lower == "content-type" && content_type.is_empty() {
             content_type = val.clone();
         }
-        out_headers.insert(name, val);
+        header_list.push((name.clone(), val.clone()));
+        // Repeats are joined the way HTTP joins them — with a comma — except
+        // Set-Cookie, whose values contain commas of their own (`Expires=Wed,
+        // 09 Jun 2027`), so joining them that way produces something nobody
+        // can split again. `insert` alone silently dropped all but the last.
+        let sep = if lower == "set-cookie" { "\n" } else { ", " };
+        out_headers
+            .entry(name)
+            .and_modify(|existing| { existing.push_str(sep); existing.push_str(&val); })
+            .or_insert(val);
     }
 
     // Refuse an oversized body before reading it when the server declares
@@ -433,19 +556,32 @@ pub async fn proxy_fetch(payload: ProxyPayload) -> Result<ProxyResponse, String>
         buf
     };
     let size = bytes.len();
-    let (body, body_is_base64) = if is_text_content_type(&content_type) {
-        (String::from_utf8_lossy(&bytes).into_owned(), false)
+    let as_base64 = || base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let (body, body_is_base64) = if bytes.is_empty() {
+        (String::new(), false)
+    } else if content_type.trim().is_empty() {
+        if sniff_is_text(&bytes) {
+            (String::from_utf8_lossy(&bytes).into_owned(), false)
+        } else {
+            (as_base64(), true)
+        }
+    } else if is_text_content_type(&content_type) {
+        match decode_text(&bytes, &charset_of(&content_type)) {
+            Some(text) => (text, false),
+            // An encoding we cannot decode faithfully. Keeping the bytes means
+            // the user can still download them; decoding as UTF-8 anyway would
+            // throw them away and show nonsense.
+            None => (as_base64(), true),
+        }
     } else {
-        (
-            base64::engine::general_purpose::STANDARD.encode(&bytes),
-            true,
-        )
+        (as_base64(), true)
     };
 
     Ok(ProxyResponse {
         status: status.as_u16(),
         status_text: status.canonical_reason().unwrap_or("").to_string(),
         headers: out_headers,
+        header_list,
         body,
         body_is_base64,
         elapsed_ms: started.elapsed().as_millis(),
@@ -526,12 +662,90 @@ mod tests {
 
     #[test]
     fn is_text_content_type_recognises_json_and_xml_variants() {
-        assert!(is_text_content_type(""));
         assert!(is_text_content_type("application/json"));
         assert!(is_text_content_type("application/vnd.api+json; charset=utf-8"));
         assert!(is_text_content_type("application/ld+json"));
         assert!(is_text_content_type("text/html"));
         assert!(!is_text_content_type("image/png"));
         assert!(!is_text_content_type("application/octet-stream"));
+    }
+
+    /// An empty content-type is no longer a licence to decode as text: a PNG
+    /// served without one was run through a lossy UTF-8 decode and shown as
+    /// mojibake, with no Download button because nothing knew it was binary.
+    #[test]
+    fn an_absent_content_type_is_not_assumed_to_be_text() {
+        assert!(!is_text_content_type(""));
+        assert!(!is_text_content_type("   "));
+        // ...and the sniffer decides instead.
+        assert!(sniff_is_text(b"{\"ok\":true}"));
+        assert!(!sniff_is_text(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]));
+    }
+
+    /// Every SOAP endpoint, every HAL API, every RSS feed. These used to come
+    /// back base64 and hide behind the "Binary response" card.
+    #[test]
+    fn structured_suffix_media_types_are_text() {
+        for ct in [
+            "application/soap+xml; charset=utf-8",
+            "application/hal+json",
+            "application/atom+xml",
+            "application/rss+xml",
+            "application/xhtml+xml",
+            "application/vnd.github.v3+json",
+            "application/problem+json",
+            "image/svg+xml",
+            "application/yaml",
+            "application/x-ndjson",
+        ] {
+            assert!(is_text_content_type(ct), "{ct} should be text");
+        }
+        for ct in ["image/png", "application/octet-stream", "application/zip", "video/mp4"] {
+            assert!(!is_text_content_type(ct), "{ct} should be binary");
+        }
+    }
+
+    #[test]
+    fn charset_is_read_off_the_content_type() {
+        assert_eq!(charset_of("text/plain; charset=iso-8859-1"), "iso-8859-1");
+        assert_eq!(charset_of("text/html;charset=UTF-8"), "utf-8");
+        assert_eq!(charset_of("application/json; charset=\"utf-16le\""), "utf-16le");
+        assert_eq!(charset_of("text/plain"), "");
+    }
+
+    /// The whole point: a legacy endpoint's accented text used to arrive with
+    /// every non-ASCII byte replaced by U+FFFD, irrecoverably.
+    #[test]
+    fn latin1_and_cp1252_bodies_decode_to_the_right_characters() {
+        assert_eq!(decode_text(&[0x63, 0x61, 0x66, 0xE9], "iso-8859-1").unwrap(), "café");
+        // 0x92 is a curly apostrophe in cp1252 and a control char in latin-1.
+        assert_eq!(decode_text(&[0x69, 0x74, 0x92, 0x73], "windows-1252").unwrap(), "it’s");
+        // from_utf8_lossy, which is what used to run, destroys both.
+        assert_eq!(String::from_utf8_lossy(&[0x63, 0x61, 0x66, 0xE9]), "caf\u{FFFD}");
+    }
+
+    #[test]
+    fn utf16_bodies_decode_instead_of_arriving_full_of_nuls() {
+        let le: Vec<u8> = "hi✓".encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        assert_eq!(decode_text(&le, "utf-16le").unwrap(), "hi✓");
+        let be: Vec<u8> = "hi✓".encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
+        assert_eq!(decode_text(&be, "utf-16be").unwrap(), "hi✓");
+    }
+
+    /// A BOM left in front of a JSON body broke JSON.parse, so the pretty
+    /// checkbox did nothing and sg.response.json() returned undefined.
+    #[test]
+    fn a_utf8_bom_is_not_left_in_front_of_the_body() {
+        let body = [&[0xEF, 0xBB, 0xBF][..], b"{\"a\":1}"].concat();
+        assert_eq!(decode_text(&body, "utf-8").unwrap(), "{\"a\":1}");
+        assert_eq!(decode_text(&body, "").unwrap(), "{\"a\":1}");
+    }
+
+    /// We do not carry tables for the multi-byte legacy encodings, and we must
+    /// not pretend: unknown means keep the bytes so Download still works.
+    #[test]
+    fn an_encoding_we_cannot_decode_is_refused_rather_than_mangled() {
+        assert!(decode_text(&[0x82, 0xA0], "shift_jis").is_none());
+        assert!(decode_text(&[0xB0, 0xA1], "gbk").is_none());
     }
 }

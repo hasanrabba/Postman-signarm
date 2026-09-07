@@ -80,6 +80,7 @@ interface RustProxyResponse {
   status: number;
   status_text: string;
   headers: Record<string, string>;
+  header_list?: Array<[string, string]>;
   body: string;
   body_is_base64?: boolean;
   elapsed_ms: number;
@@ -93,6 +94,7 @@ function fromRust(r: RustProxyResponse): SignalResponse {
     status: r.status,
     statusText: r.status_text,
     headers: r.headers,
+    headerList: r.header_list,
     body: r.body,
     bodyIsBase64: r.body_is_base64,
     elapsedMs: r.elapsed_ms,

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { lookup } from "node:dns/promises";
 import { isBlockedHostname, isBlockedIp, normalizeHostname } from "@/lib/ssrf";
 import { sendsBody } from "@/lib/wire";
+import { decodeBody, headerMap, headerPairs } from "@/lib/body";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -104,6 +105,29 @@ const STRIP_RESPONSE_HEADERS = new Set([
   "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
   "upgrade",
 ]);
+
+/**
+ * What actually went wrong on the wire.
+ *
+ * undici's message for every transport-level failure is the literal string
+ * "fetch failed" — a refused connection, a socket hung up mid-response and a
+ * TLS handshake error all reach the user as those two words, which is no help
+ * at all for the most common thing that goes wrong: the API is not up yet, or
+ * the port is wrong. The reason lives on `cause`, which used to be discarded.
+ */
+function describeFetchError(err: Error): string {
+  const parts: string[] = [err.message];
+  let cause: unknown = (err as { cause?: unknown }).cause;
+  const seen = new Set<unknown>();
+  while (cause && typeof cause === "object" && !seen.has(cause)) {
+    seen.add(cause);
+    const c = cause as { message?: string; code?: string; cause?: unknown };
+    const line = [c.code, c.message].filter(Boolean).join(": ");
+    if (line && !parts.includes(line)) parts.push(line);
+    cause = c.cause;
+  }
+  return parts.join(" — ").slice(0, 500);
+}
 
 function filterRequestHeaders(raw: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -256,24 +280,21 @@ export async function POST(req: NextRequest) {
       );
     }
     const ct = res.headers.get("content-type") || "";
-    const isText = /^(text\/|application\/(json|xml|javascript|x-www-form-urlencoded|graphql|ld\+json|problem\+json|vnd\.api\+json))/i.test(ct) || !ct;
-    let respBody = "";
-    let bodyIsBase64 = false;
-    if (isText) {
-      respBody = new TextDecoder("utf-8", { fatal: false }).decode(buf);
-    } else {
-      respBody = Buffer.from(buf).toString("base64");
-      bodyIsBase64 = true;
-    }
-    const headers: Record<string, string> = {};
-    res.headers.forEach((v, k) => {
-      if (!STRIP_RESPONSE_HEADERS.has(k.toLowerCase())) headers[k] = v;
-    });
+    const { body: respBody, bodyIsBase64 } = decodeBody(
+      new Uint8Array(buf),
+      ct,
+      (b) => Buffer.from(b).toString("base64")
+    );
+    const headerList = headerPairs(res.headers, STRIP_RESPONSE_HEADERS);
+    const headers = headerMap(headerList);
     const finalUrl = current.toString();
     return NextResponse.json({
       status: res.status,
-      statusText: res.statusText,
+      // Servers pick this string, and HTTP/2 omits it entirely. Unbounded, a
+      // hostile or broken one pushes every other field off the status bar.
+      statusText: res.statusText.slice(0, 120),
       headers,
+      headerList,
       body: respBody,
       bodyIsBase64,
       elapsedMs: Date.now() - started,
@@ -290,7 +311,7 @@ export async function POST(req: NextRequest) {
       body: "",
       sizeBytes: 0,
       elapsedMs: Date.now() - started,
-      error: err.name === "AbortError" ? `Request timed out after ${timeoutMs}ms` : err.message,
+      error: err.name === "AbortError" ? `Request timed out after ${timeoutMs}ms` : describeFetchError(err),
     });
   } finally {
     clearTimeout(timeout);
