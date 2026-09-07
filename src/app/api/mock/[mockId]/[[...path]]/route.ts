@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { MAX_DELAY_MS, safeHeaders, type MockRoute } from "@/lib/mock";
+import { MAX_DELAY_MS, NULL_BODY_STATUSES, safeHeaders, type MockRoute } from "@/lib/mock";
 
 declare global {
   var __signalMocks: Record<string, MockRoute[]> | undefined;
@@ -100,5 +100,8 @@ async function handle(req: NextRequest, ctx: Ctx) {
   // A HEAD response carries the headers of the GET it stands in for, and none
   // of the body.
   const body = typeof match.body === "string" ? match.body : String(match.body ?? "");
-  return new NextResponse(req.method === "HEAD" ? null : body, { status, headers });
+  // 204, 205 and 304 forbid a body, and the Response constructor throws rather
+  // than dropping one — so passing the route's body made the request 500.
+  const sendsBody = !NULL_BODY_STATUSES.has(status) && req.method !== "HEAD";
+  return new NextResponse(sendsBody ? body : null, { status, headers });
 }

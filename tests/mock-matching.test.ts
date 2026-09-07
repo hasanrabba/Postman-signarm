@@ -86,3 +86,33 @@ describe("what stays strict", () => {
     expect((await hit("s4", ["z"])).body).toBe("FIRST");
   });
 });
+
+/* 204, 205 and 304 carry no body, and the Response constructor throws rather
+   than dropping one — so a route set to 204 answered 500 on every request, and
+   took the rest of the mock's routes with it. 204 is two clicks of the status
+   spinner away from the default. */
+describe("a status that forbids a body", () => {
+  for (const status of [204, 205, 304]) {
+    test(`${status} is served, not 500`, async () => {
+      await publish(`n${status}`, [route({ status })]);
+      const res = await hit(`n${status}`, ["z"]);
+      expect(res.status).toBe(status);
+      expect(res.body).toBe("");
+    });
+  }
+
+  test("the route's headers still arrive", async () => {
+    await publish("n2", [route({ status: 204, headers: { "X-Total": "42" } })]);
+    expect((await hit("n2", ["z"])).headers.get("x-total")).toBe("42");
+  });
+
+  test("it does not take down the other routes in the same mock", async () => {
+    await publish("n3", [route({ path: "/empty", status: 204 }), route({ path: "/full", body: "HIT" })]);
+    expect((await hit("n3", ["full"])).body).toBe("HIT");
+  });
+
+  test("an ordinary status still carries its body (control)", async () => {
+    await publish("n4", [route()]);
+    expect((await hit("n4", ["z"])).body).toBe("HIT");
+  });
+});

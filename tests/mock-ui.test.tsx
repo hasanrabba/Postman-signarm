@@ -92,3 +92,126 @@ describe("where the mock answers", () => {
     expect(screen.queryByText(/Serving at/)).toBeNull();
   }, 30_000);
 });
+
+/* The status field clamped on every keystroke: the first digit of "404" was
+   clamped up to 200, React rewrote the field with the caret at the end, the
+   next digit made "2000" which clamped to 599, and it never recovered. */
+describe("typing a status code", () => {
+  async function openRoute() {
+    const user = userEvent.setup();
+    const id = useStore.getState().createMock("M");
+    useStore.getState().updateMock(id, {
+      routes: [{ id: "r1", method: "GET", path: "/z", status: 200, headers: {}, body: "b" }],
+    });
+    render(<Home />);
+    await user.click(await screen.findByRole("button", { name: /^mocks$/i }));
+    await user.click(await screen.findByText("▸"));
+    return { user, id, field: screen.getByLabelText("Response status") as HTMLInputElement };
+  }
+
+  for (const code of ["404", "204", "301", "503"]) {
+    test(`typing ${code} leaves ${code}`, async () => {
+      const { user, id, field } = await openRoute();
+      await user.clear(field);
+      await user.type(field, code);
+      await user.tab();   // commit on leaving the field
+      expect(field.value).toBe(code);
+      expect(useStore.getState().mocks[id].routes[0].status).toBe(Number(code));
+    }, 30_000);
+  }
+
+  test("a value out of range is still corrected when you leave the field", async () => {
+    const { user, id, field } = await openRoute();
+    await user.clear(field);
+    await user.type(field, "999");
+    await user.tab();
+    expect(useStore.getState().mocks[id].routes[0].status).toBe(599);
+  }, 30_000);
+
+  test("an emptied field falls back to what was there", async () => {
+    const { user, id, field } = await openRoute();
+    await user.clear(field);
+    await user.tab();
+    expect(useStore.getState().mocks[id].routes[0].status).toBe(200);
+  }, 30_000);
+});
+
+/* The ✓ was component state that only a publish ever set, so it outlived the
+   routes it described. */
+describe("the publish tick describes what is actually published", () => {
+  async function published() {
+    const user = userEvent.setup();
+    const id = useStore.getState().createMock("M");
+    useStore.getState().updateMock(id, {
+      routes: [{ id: "r1", method: "GET", path: "/z", status: 200, headers: {}, body: "first" }],
+    });
+    registerMock.mockResolvedValue({ ok: true, count: 1 });
+    render(<Home />);
+    await user.click(await screen.findByRole("button", { name: /^mocks$/i }));
+    await user.click(await screen.findByText("▸"));
+    await user.click(screen.getByRole("button", { name: /^publish/i }));
+    await screen.findByRole("button", { name: /publish ✓/i });
+    return user;
+  }
+  const tick = () => screen.getByRole("button", { name: /^publish/i }).textContent ?? "";
+
+  test("editing a body clears it", async () => {
+    const user = await published();
+    await user.type(screen.getByPlaceholderText("response body"), "X");
+    await waitFor(() => expect(tick()).not.toContain("✓"));
+  }, 30_000);
+
+  test("editing a path clears it", async () => {
+    const user = await published();
+    await user.type(screen.getByPlaceholderText("/path"), "X");
+    await waitFor(() => expect(tick()).not.toContain("✓"));
+  }, 30_000);
+
+  test("adding a route clears it", async () => {
+    const user = await published();
+    await user.click(screen.getByRole("button", { name: /\+ Route/i }));
+    await waitFor(() => expect(tick()).not.toContain("✓"));
+  }, 30_000);
+
+  test("changing the status clears it", async () => {
+    const user = await published();
+    const field = screen.getByLabelText("Response status");
+    await user.clear(field);
+    await user.type(field, "404");
+    await user.tab();
+    await waitFor(() => expect(tick()).not.toContain("✓"));
+  }, 30_000);
+});
+
+/* The confirm dialog says this cannot be undone, and it could not: only the
+   local entry was dropped, so the mock's URL went on serving every route it
+   had — with no way left to stop it, because the mock was gone. */
+describe("deleting a mock server", () => {
+  test("withdraws its routes from the server first", async () => {
+    const user = userEvent.setup();
+    const id = useStore.getState().createMock("Billing");
+    useStore.getState().updateMock(id, {
+      routes: [{ id: "r1", method: "GET", path: "/z", status: 200, headers: {}, body: "b" }],
+    });
+    registerMock.mockResolvedValue({ ok: true, count: 1 });
+    render(<Home />);
+    await user.click(await screen.findByRole("button", { name: /^mocks$/i }));
+    await user.click(screen.getByRole("button", { name: /Delete mock server Billing/i }));
+    await user.click(await screen.findByRole("button", { name: /^delete$/i }));
+
+    await waitFor(() => expect(registerMock).toHaveBeenCalledWith(id, []));
+    expect(useStore.getState().mocks[id]).toBeUndefined();
+  }, 30_000);
+
+  test("and does nothing at all if the confirm is declined", async () => {
+    const user = userEvent.setup();
+    const id = useStore.getState().createMock("Billing");
+    render(<Home />);
+    await user.click(await screen.findByRole("button", { name: /^mocks$/i }));
+    await user.click(screen.getByRole("button", { name: /Delete mock server Billing/i }));
+    await user.click(await screen.findByRole("button", { name: /^cancel$/i }));
+
+    expect(registerMock).not.toHaveBeenCalled();
+    expect(useStore.getState().mocks[id]).toBeDefined();
+  }, 30_000);
+});

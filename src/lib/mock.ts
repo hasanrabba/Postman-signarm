@@ -23,6 +23,14 @@ export type MockRoute = {
  * the handler behind it. 600000 was accepted, and ten minutes of that is a
  * mock server the user cannot get back.
  */
+/**
+ * Statuses that carry no body. The Response constructor throws outright on one
+ * — "Invalid response status code 204" — so a route the user set to 204 was
+ * accepted and then answered 500 on every request, taking the whole mock with
+ * it.
+ */
+export const NULL_BODY_STATUSES = new Set([204, 205, 304]);
+
 export const MAX_DELAY_MS = 30_000;
 export const MAX_ROUTES = 2_000;
 export const MAX_BODY_BYTES = 5 * 1024 * 1024;

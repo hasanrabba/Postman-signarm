@@ -605,6 +605,39 @@ function MocksPanel() {
   );
 }
 
+/**
+ * Clamping inside onChange made the field impossible to type into. The first
+ * digit of "404" was clamped up to 200, React rewrote the field to "200" with
+ * the caret at the end, the next digit made "2000", which clamped to 599 — and
+ * it never recovered. Every typed code came out 599.
+ *
+ * So the raw text is kept while the field is being edited and the range is
+ * applied when the user leaves it, which is the only moment the value is
+ * finished.
+ */
+function StatusInput({ value, onCommit }: { value: number; onCommit: (n: number) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    const n = Number.parseInt(draft, 10);
+    // An empty field yields NaN, which serialises to null and makes every
+    // request to this route fail at send time.
+    onCommit(Number.isNaN(n) ? value : Math.min(599, Math.max(200, n)));
+    setDraft(null);
+  };
+  return (
+    <input
+      className="input !w-16"
+      type="number"
+      aria-label="Response status"
+      value={draft ?? String(value)}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === "Enter") commit(); }}
+    />
+  );
+}
+
 function MockServerEditor({
   server, onRename, onDelete, onRoutesChange,
 }: {
@@ -634,6 +667,18 @@ function MockServerEditor({
     if (!res.ok) setSyncError(res.error || "The mock server refused these routes.");
   };
 
+  /**
+   * Every edit goes through here so the ✓ cannot outlive the routes it
+   * describes: the tick was component state that only sync() ever set, so the
+   * panel read "Publish ✓" while the server was still serving a body the user
+   * had already changed, or a route they had deleted.
+   */
+  const changeRoutes = (routes: MockRoute[]) => {
+    setSyncing("idle");
+    setSyncError("");
+    onRoutesChange(routes);
+  };
+
   const addRoute = () => {
     const newRoute: MockRoute = {
       id: uid("rt"),
@@ -643,7 +688,7 @@ function MockServerEditor({
       headers: { "content-type": "application/json" },
       body: "{}",
     };
-    onRoutesChange([...server.routes, newRoute]);
+    changeRoutes([...server.routes, newRoute]);
     setExpanded(true);
   };
 
@@ -664,7 +709,14 @@ function MockServerEditor({
               confirmLabel: "Delete",
               destructive: true,
             });
-            if (ok) onDelete();
+            if (!ok) return;
+            // The confirm says this cannot be undone, and it could not: only
+            // the local entry was dropped, so the mock's URL went on serving
+            // every route it had, with no way left to stop it because the
+            // mock was gone from the sidebar. Withdraw the routes first.
+            const { registerMock } = await import("@/lib/transport");
+            await registerMock(server.id, []);
+            onDelete();
           }}
         >×</button>
       </div>
@@ -681,7 +733,7 @@ function MockServerEditor({
                   value={r.method}
                   onChange={(e) => {
                     const copy = [...server.routes]; copy[idx] = { ...r, method: e.target.value as Method };
-                    onRoutesChange(copy);
+                    changeRoutes(copy);
                   }}
                 >
                   {METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
@@ -692,28 +744,19 @@ function MockServerEditor({
                   placeholder="/path"
                   onChange={(e) => {
                     const copy = [...server.routes]; copy[idx] = { ...r, path: e.target.value };
-                    onRoutesChange(copy);
+                    changeRoutes(copy);
                   }}
                 />
-                <input
-                  className="input !w-16"
-                  type="number"
+                <StatusInput
                   value={r.status}
-                  min={200}
-                  max={599}
-                  aria-label="Response status"
-                  onChange={(e) => {
-                    // An empty field yields NaN, which serialises to null and
-                    // makes every request to this route fail at send time.
-                    const n = Number.parseInt(e.target.value, 10);
-                    const status = Number.isNaN(n) ? 200 : Math.min(599, Math.max(200, n));
+                  onCommit={(status) => {
                     const copy = [...server.routes]; copy[idx] = { ...r, status };
-                    onRoutesChange(copy);
+                    changeRoutes(copy);
                   }}
                 />
                 <button
                   className="text-xs text-signal-muted hover:text-signal-err"
-                  onClick={() => onRoutesChange(server.routes.filter((x) => x.id !== r.id))}
+                  onClick={() => changeRoutes(server.routes.filter((x) => x.id !== r.id))}
                 >×</button>
               </div>
               <textarea
@@ -722,7 +765,7 @@ function MockServerEditor({
                 value={r.body}
                 onChange={(e) => {
                   const copy = [...server.routes]; copy[idx] = { ...r, body: e.target.value };
-                  onRoutesChange(copy);
+                  changeRoutes(copy);
                 }}
               />
             </div>

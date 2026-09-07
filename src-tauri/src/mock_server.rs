@@ -271,12 +271,17 @@ async fn handle(mut socket: TcpStream, state: Arc<MockState>) -> std::io::Result
                 resp.push_str("Access-Control-Expose-Headers: *\r\n");
                 resp.push_str("Vary: Origin\r\n");
             }
-            resp.push_str(&format!("Content-Length: {}\r\n", body.len()));
+            // 204, 205 and 304 carry no body and no Content-Length at all;
+            // sending one leaves the client waiting for bytes never sent.
+            let null_body = matches!(status, 204 | 205 | 304);
+            if !null_body {
+                resp.push_str(&format!("Content-Length: {}\r\n", body.len()));
+            }
             resp.push_str("Connection: close\r\n\r\n");
             wr.write_all(resp.as_bytes()).await?;
             // A HEAD response carries the headers of the GET it stands in for,
             // Content-Length included, and none of the body.
-            if method != "HEAD" {
+            if method != "HEAD" && !null_body {
                 wr.write_all(body.as_bytes()).await?;
             }
         }
@@ -527,6 +532,25 @@ mod tests {
         st.routes.write().insert("m".into(), vec![slash, exact]);
         let out = serve_once(st, "/m/z").await;
         assert!(out.ends_with("EXACT"), "{out:?}");
+    }
+
+    /// A 204 carries no body and no Content-Length; sending one leaves the
+    /// client waiting for bytes that never come.
+    #[tokio::test]
+    async fn a_status_that_forbids_a_body_sends_neither_body_nor_length() {
+        for status in [204u16, 205, 304] {
+            let out = serve_once(with_route(route(HashMap::new(), status, "SHOULD-NOT-APPEAR")), "/m/z").await;
+            assert!(out.starts_with(&format!("HTTP/1.1 {status}")), "{out:?}");
+            assert!(!out.contains("SHOULD-NOT-APPEAR"), "sent a body with {status}: {out:?}");
+            assert!(!out.contains("Content-Length"), "sent a length with {status}: {out:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_status_still_carries_its_body() {
+        let out = serve_once(with_route(route(HashMap::new(), 200, "HIT")), "/m/z").await;
+        assert!(out.contains("Content-Length: 3"), "{out:?}");
+        assert!(out.ends_with("HIT"), "{out:?}");
     }
 
     #[tokio::test]
