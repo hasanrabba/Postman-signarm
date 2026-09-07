@@ -77,8 +77,22 @@ async function handle(req: NextRequest, ctx: Ctx) {
         },
       });
     }
+    // Three different failures used to give the identical message: a mistyped
+    // path, a mock that was never published, and one whose routes were
+    // emptied. Say which, so the reader knows whether to fix the URL or press
+    // Publish.
     return NextResponse.json(
-      { error: "No matching mock route", method: req.method, path: mockPath, mockId },
+      {
+        error: routes.length === 0
+          ? `Mock "${mockId}" has no published routes — press Publish in the app.`
+          : "No matching mock route",
+        method: req.method,
+        path: mockPath,
+        mockId,
+        ...(routes.length > 0
+          ? { published: routes.map((r) => `${r.method} ${r.path}`) }
+          : {}),
+      },
       { status: 404, headers: cors(req) }
     );
   }

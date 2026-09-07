@@ -116,3 +116,26 @@ describe("a status that forbids a body", () => {
     expect((await hit("n4", ["z"])).body).toBe("HIT");
   });
 });
+
+/* A mistyped path, a mock that was never published, and one whose routes were
+   emptied all gave the identical message. */
+describe("a 404 says which kind of miss it is", () => {
+  test("a mock that was never published says to press Publish", async () => {
+    const res = await hit("never-seen", ["z"]);
+    expect(res.status).toBe(404);
+    expect(JSON.parse(res.body).error).toMatch(/no published routes/i);
+  });
+
+  test("so does one whose routes were emptied", async () => {
+    await publish("emptied", [route()]);
+    await publish("emptied", []);
+    expect(JSON.parse((await hit("emptied", ["z"])).body).error).toMatch(/no published routes/i);
+  });
+
+  test("a mistyped path lists what is actually published", async () => {
+    await publish("typo", [route({ path: "/orders" })]);
+    const body = JSON.parse((await hit("typo", ["order"])).body);
+    expect(body.error).toMatch(/no matching mock route/i);
+    expect(body.published).toEqual(["GET /orders"]);
+  });
+});
