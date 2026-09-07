@@ -135,6 +135,11 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
       }
       if ((isMac ? e.metaKey : e.ctrlKey) && e.key === "Enter") {
         e.preventDefault();
+        // The same guard the Send button computes for its disabled state.
+        // Without it a second ⌘Enter sent the request again while the first
+        // was still in flight — twice for a POST — and one with the URL
+        // cleared fired at an empty address the button refuses.
+        if (tab.sending || !draft.url.trim()) return;
         void send();
       }
     };
@@ -142,7 +147,7 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
     return () => window.removeEventListener("keydown", handler);
     // Re-bound whenever the handlers change, so a shortcut never fires with a
     // stale environment or collection captured from an earlier render.
-  }, [save, send]);
+  }, [save, send, tab.sending, draft.url]);
 
   return (
     <div className="flex flex-col">

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useStore } from "@/lib/store";
-import { useTopLayer } from "@/lib/layers";
+import { anyLayerOpen, useTopLayer } from "@/lib/layers";
 
 type Command = {
   id: string;
@@ -18,6 +18,11 @@ export function CommandPalette() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Holding a key autorepeats. Holding ⌘N gave a fistful of blank tabs.
+      if (e.repeat) return;
+      // AltGr reports as ctrl+alt on Windows and Linux, so a shortcut that
+      // ignores Alt eats characters a German or Polish layout types with it.
+      if (e.altKey) return;
       const isMac = /Mac/.test(navigator.platform);
       if ((isMac ? e.metaKey : e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
@@ -25,7 +30,7 @@ export function CommandPalette() {
       }
       // The palette advertises ⌘N for a new request; bind it here so the
       // hint is true. Shift+⌘N is the browser's new-window shortcut.
-      if ((isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "n") {
+      if ((isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "n" && !anyLayerOpen()) {
         e.preventDefault();
         openDraft();
         setCommandPaletteOpen(false);
@@ -116,7 +121,10 @@ function PaletteBody({ commands, onClose }: { commands: Command[]; onClose: () =
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center pt-24"
+      // Above the confirm dialog (z-60) and the runner (z-40). It used to sit
+      // at z-50, so opening it over a dialog put an invisible input in charge
+      // of the keyboard and everything typed went into it.
+      className="fixed inset-0 z-[70] bg-black/60 flex items-start justify-center pt-24"
       onClick={onClose}
     >
       <div
@@ -143,7 +151,12 @@ function PaletteBody({ commands, onClose }: { commands: Command[]; onClose: () =
             else if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
             else if (e.key === "Home") { e.preventDefault(); setSelected(0); }
             else if (e.key === "End") { e.preventDefault(); setSelected(filtered.length - 1); }
-            else if (e.key === "Enter") { e.preventDefault(); runSelected(); }
+            // Bare Enter only: ⌘Enter belongs to the request behind the
+            // palette, not to the highlighted command.
+            else if (e.key === "Enter" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+              e.preventDefault();
+              runSelected();
+            }
           }}
         />
         <div className="max-h-80 overflow-auto" id="palette-list" role="listbox">

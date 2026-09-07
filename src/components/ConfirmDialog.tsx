@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useTopLayer } from "@/lib/layers";
 
 interface ConfirmOptions {
@@ -50,6 +50,7 @@ export function ConfirmDialogHost() {
   }, [subscribe]);
 
   const isTop = useTopLayer(open);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -59,6 +60,11 @@ export function ConfirmDialogHost() {
       // dialog, so a keystroke meant for the palette deleted a mock server.
       if (!isTop()) return;
       if (e.key === "Escape") { e.preventDefault(); notifyClose(false); }
+      // Only while the focus is still in here. Nothing traps it, so a user who
+      // clicks into the sidebar's search box and presses Enter was answering
+      // "yes" to a question about deleting their collection.
+      const focused = document.activeElement;
+      if (focused && focused !== document.body && !dialogRef.current?.contains(focused)) return;
       // Plain Enter only: ⌘Enter and Ctrl+Enter are the send gesture, not an
       // answer to this dialog.
       if (e.key === "Enter" && !e.metaKey && !e.ctrlKey && !e.altKey) {
@@ -77,6 +83,7 @@ export function ConfirmDialogHost() {
       role="dialog"
       aria-modal="true"
       aria-labelledby="signal-confirm-title"
+      ref={dialogRef}
       className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center"
       onClick={() => notifyClose(false)}
     >
