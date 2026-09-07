@@ -33,7 +33,14 @@ export const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 
 export const MAX_DELAY_MS = 30_000;
 export const MAX_ROUTES = 2_000;
-export const MAX_BODY_BYTES = 5 * 1024 * 1024;
+/**
+ * A mock's routes live in the same ~5MB localStorage budget as every
+ * collection, environment and history entry, so a 5MB body was larger than the
+ * whole allowance — one legal route was enough to stop the app saving anything
+ * at all. This is well past any recorded API response and still leaves room
+ * for the rest of the app.
+ */
+export const MAX_BODY_BYTES = 256 * 1024;
 
 /** RFC 9110 field-name token. */
 const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;

@@ -34,7 +34,9 @@ const MAX_HEADER_LINE: usize = 8 * 1024;
 /// the task behind it. Kept in step with MAX_DELAY_MS in src/lib/mock.ts.
 const MAX_DELAY_MS: u64 = 30_000;
 const MAX_ROUTES: usize = 2_000;
-const MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
+/// Kept in step with MAX_BODY_BYTES in src/lib/mock.ts: the routes share the
+/// webview's localStorage budget with everything else the app remembers.
+const MAX_BODY_BYTES: usize = 256 * 1024;
 
 /// RFC 9110 field-name token — also the shape of a method.
 fn is_token(s: &str) -> bool {

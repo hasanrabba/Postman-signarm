@@ -2,6 +2,7 @@
 
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
+import { reportPersistFailure } from "./persistStatus";
 import type {
   Collection,
   CollectionVersion,
@@ -697,11 +698,29 @@ export const useStore = create<Store>()(
       // reads localStorage synchronously during the first render pass and
       // produces hydration mismatches.
       skipHydration: true,
-      storage: createJSONStorage(() =>
-        typeof window === "undefined"
-          ? (undefined as unknown as Storage)
-          : window.localStorage
-      ),
+      // The write is watched rather than fired and forgotten: persist ignores
+      // what setItem does, so a full localStorage failed silently and every
+      // later change failed with it.
+      storage: createJSONStorage(() => {
+        if (typeof window === "undefined") return undefined as unknown as Storage;
+        const ls = window.localStorage;
+        return {
+          getItem: (k: string) => ls.getItem(k),
+          removeItem: (k: string) => ls.removeItem(k),
+          setItem: (k: string, v: string) => {
+            try {
+              ls.setItem(k, v);
+              reportPersistFailure(null);
+            } catch {
+              reportPersistFailure(
+                `Could not save: this browser's storage is full (${Math.round(v.length / 1024)}KB). ` +
+                  "Nothing since the last successful save will survive a reload — " +
+                  "shorten a large mock or request body, or clear some history."
+              );
+            }
+          },
+        } as unknown as Storage;
+      }),
       partialize: (s) => ({
         collections: s.collections,
         collectionOrder: s.collectionOrder,

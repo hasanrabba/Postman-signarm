@@ -24,8 +24,17 @@ function crossSite(req: NextRequest): boolean {
   if (site && site !== "same-origin" && site !== "none") return true;
   const origin = req.headers.get("origin");
   if (!origin) return false;
+  // Compared against the request's own Host header, not new URL(req.url):
+  // Next builds req.url from the hostname the server was started on — always
+  // "localhost:PORT" — so opening the app at 127.0.0.1, at a .local name, or
+  // at the "Network:" URL Next prints on startup made publishing a mock
+  // impossible. Host is a forbidden header, so a page cannot forge it: a
+  // cross-site request still mismatches, because its Origin is the attacker's
+  // while the Host is whatever the user typed.
+  const host = req.headers.get("host");
+  if (!host) return false;
   try {
-    return new URL(origin).host !== new URL(req.url).host;
+    return new URL(origin).host !== host;
   } catch {
     return true;
   }
