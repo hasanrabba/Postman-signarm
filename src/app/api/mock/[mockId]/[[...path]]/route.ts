@@ -38,6 +38,11 @@ function cors(req: NextRequest): Record<string, string> {
   };
 }
 
+/** `/users/` and `/users` name the same route; `/` still means the root. */
+function trimSlash(p: string): string {
+  return p.length > 1 ? p.replace(/\/+$/, "") || "/" : p;
+}
+
 async function handle(req: NextRequest, ctx: Ctx) {
   const { mockId, path = [] } = await ctx.params;
   const routes = mocks[mockId] || [];
@@ -45,12 +50,17 @@ async function handle(req: NextRequest, ctx: Ctx) {
   // Guarded rather than trusting: the matcher walks every route, so one whose
   // method is not a string used to throw here and take down every other path
   // in the same mock, not just its own.
-  const match = routes.find(
-    (r) =>
-      typeof r?.method === "string" &&
-      r.method.toUpperCase() === req.method &&
-      r.path === mockPath
-  );
+  const usable = routes.filter((r) => typeof r?.method === "string" && typeof r?.path === "string");
+  const exact = usable.find((r) => r.method.toUpperCase() === req.method && r.path === mockPath);
+  // An exact match always wins. Failing that: a trailing slash is not worth a
+  // 404 — /users/ and /users are the same route to anyone typing them — and
+  // HTTP says HEAD is answerable wherever GET is, so a health check against a
+  // mocked GET should not come back missing.
+  const match = exact ?? usable.find((r) => {
+    const m = r.method.toUpperCase();
+    const methodOk = m === req.method || (req.method === "HEAD" && m === "GET");
+    return methodOk && trimSlash(r.path) === trimSlash(mockPath);
+  });
   if (!match) {
     // An unmatched OPTIONS carrying Access-Control-Request-Method is a
     // preflight, not a missing route. A route registered FOR options still
@@ -87,8 +97,8 @@ async function handle(req: NextRequest, ctx: Ctx) {
   // The route's own headers win: a user who sets Access-Control-Allow-Origin
   // themselves means it.
   const headers = { ...cors(req), ...safeHeaders(match.headers) };
-  return new NextResponse(typeof match.body === "string" ? match.body : String(match.body ?? ""), {
-    status,
-    headers,
-  });
+  // A HEAD response carries the headers of the GET it stands in for, and none
+  // of the body.
+  const body = typeof match.body === "string" ? match.body : String(match.body ?? "");
+  return new NextResponse(req.method === "HEAD" ? null : body, { status, headers });
 }

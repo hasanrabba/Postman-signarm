@@ -274,7 +274,11 @@ async fn handle(mut socket: TcpStream, state: Arc<MockState>) -> std::io::Result
             resp.push_str(&format!("Content-Length: {}\r\n", body.len()));
             resp.push_str("Connection: close\r\n\r\n");
             wr.write_all(resp.as_bytes()).await?;
-            wr.write_all(body.as_bytes()).await?;
+            // A HEAD response carries the headers of the GET it stands in for,
+            // Content-Length included, and none of the body.
+            if method != "HEAD" {
+                wr.write_all(body.as_bytes()).await?;
+            }
         }
         // An unmatched OPTIONS carrying Access-Control-Request-Method is a
         // preflight, not a missing route. A route registered FOR options still
@@ -328,9 +332,33 @@ fn route_lookup(
 ) -> Option<MockRoute> {
     let routes = state.routes.read();
     let list = routes.get(mock_id)?;
-    list.iter()
+    // An exact match always wins. Failing that: a trailing slash is not worth
+    // a 404 — /users/ and /users are the same route to anyone typing them —
+    // and HTTP says HEAD is answerable wherever GET is, so a health check
+    // against a mocked GET should not come back missing.
+    if let Some(r) = list
+        .iter()
         .find(|r| r.method.eq_ignore_ascii_case(method) && r.path == path)
+    {
+        return Some(r.clone());
+    }
+    list.iter()
+        .find(|r| {
+            let method_ok = r.method.eq_ignore_ascii_case(method)
+                || (method.eq_ignore_ascii_case("HEAD") && r.method.eq_ignore_ascii_case("GET"));
+            method_ok && trim_slash(&r.path) == trim_slash(path)
+        })
         .cloned()
+}
+
+/// `/users/` and `/users` name the same route; `/` still means the root.
+fn trim_slash(p: &str) -> &str {
+    if p.len() > 1 {
+        let t = p.trim_end_matches('/');
+        if t.is_empty() { "/" } else { t }
+    } else {
+        p
+    }
 }
 
 fn split_target(target: &str) -> (String, String) {
@@ -469,6 +497,42 @@ mod tests {
         ).await;
         assert!(out.contains("Access-Control-Allow-Origin: https://only.test"), "{out:?}");
         assert!(!out.contains("Allow-Origin: http://localhost:5173"), "{out:?}");
+    }
+
+    /// A trailing slash is not worth a 404, and HTTP says HEAD is answerable
+    /// wherever GET is.
+    #[tokio::test]
+    async fn a_trailing_slash_still_finds_the_route() {
+        let out = serve_once(with_route(route(HashMap::new(), 200, "HIT")), "/m/z/").await;
+        assert!(out.ends_with("HIT"), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn head_answers_from_a_get_route_without_a_body() {
+        let out = serve_raw(
+            with_route(route(HashMap::new(), 200, "HIT")),
+            "HEAD /m/z HTTP/1.1\r\nHost: x\r\n\r\n",
+        ).await;
+        assert!(out.starts_with("HTTP/1.1 200"), "{out:?}");
+        assert!(out.contains("Content-Length: 3"), "lost the GET's headers: {out:?}");
+        assert!(!out.ends_with("HIT"), "a HEAD response carried a body: {out:?}");
+    }
+
+    #[tokio::test]
+    async fn an_exact_match_still_wins() {
+        let st = Arc::new(MockState::default());
+        let mut slash = route(HashMap::new(), 200, "SLASH");
+        slash.path = "/z/".into();
+        let exact = route(HashMap::new(), 200, "EXACT");
+        st.routes.write().insert("m".into(), vec![slash, exact]);
+        let out = serve_once(st, "/m/z").await;
+        assert!(out.ends_with("EXACT"), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn a_different_path_is_still_a_404() {
+        let out = serve_once(with_route(route(HashMap::new(), 200, "HIT")), "/m/nope").await;
+        assert!(out.starts_with("HTTP/1.1 404"), "{out:?}");
     }
 
     #[tokio::test]
