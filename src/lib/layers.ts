@@ -57,3 +57,71 @@ export function useTopLayer(active: boolean): () => boolean {
   }, [active]);
   return () => token.current !== null && stack[stack.length - 1] === token.current;
 }
+
+const FOCUSABLE = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
+
+/**
+ * Keep the keyboard inside a modal, and give it back afterwards.
+ *
+ * Nothing trapped Tab, so one Shift+Tab from the open command palette put the
+ * cursor in a Params field behind it and everything typed after that was
+ * written silently into the request. The confirm dialog was worse: seven tabs
+ * reached the sidebar's search box, and its window-level Enter handler then
+ * answered "yes" to a question about deleting a collection.
+ *
+ * Closing dropped focus on the body, so the next thing typed went nowhere at
+ * all — the user had to click back into the field they had been in.
+ *
+ * Returns a ref to put on the modal's outermost element.
+ */
+export function useModalFocus<T extends HTMLElement>(active: boolean) {
+  const ref = useRef<T | null>(null);
+
+  useEffect(() => {
+    if (!active) return;
+    const node = ref.current;
+    // Read here, not in a later effect, and only because nothing inside has
+    // taken focus yet: React applies `autoFocus` while it commits, which is
+    // before this runs, so a modal that used it left us pointing at its own
+    // input. Mark the element to start on with `data-modal-autofocus` instead.
+    const previously = document.activeElement as HTMLElement | null;
+
+    // No visibility filtering: jsdom reports every element as unrendered, and
+    // a modal's contents are on screen by definition.
+    const focusable = () => Array.from(node?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
+
+    if (node && !node.contains(document.activeElement)) {
+      (node.querySelector<HTMLElement>("[data-modal-autofocus]") ?? focusable()[0])?.focus();
+    }
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" || !node) return;
+      const list = focusable();
+      if (list.length === 0) return;
+      const first = list[0];
+      const last = list[list.length - 1];
+      const current = document.activeElement as HTMLElement | null;
+      if (!current || !node.contains(current)) { e.preventDefault(); first.focus(); return; }
+      if (e.shiftKey && current === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && current === last) { e.preventDefault(); first.focus(); }
+    };
+    // Captured, so it runs before anything inside the modal sees the Tab.
+    window.addEventListener("keydown", onKey, true);
+
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      if (previously && previously !== document.body && document.contains(previously)) {
+        previously.focus?.();
+      }
+    };
+  }, [active]);
+
+  return ref;
+}

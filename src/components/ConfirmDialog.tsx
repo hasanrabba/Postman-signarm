@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
-import { useTopLayer } from "@/lib/layers";
+import { useEffect, useState, useCallback } from "react";
+import { useModalFocus, useTopLayer } from "@/lib/layers";
 
 interface ConfirmOptions {
   title: string;
@@ -50,7 +50,10 @@ export function ConfirmDialogHost() {
   }, [subscribe]);
 
   const isTop = useTopLayer(open);
-  const dialogRef = useRef<HTMLDivElement | null>(null);
+  // Traps Tab inside the dialog and hands focus back to whatever had it when
+  // the dialog closes. Seven tabs from here used to reach the sidebar search
+  // box, where Enter answered "yes" to a question about deleting a collection.
+  const dialogRef = useModalFocus<HTMLDivElement>(open);
 
   useEffect(() => {
     if (!open) return;
@@ -74,7 +77,7 @@ export function ConfirmDialogHost() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, isTop]);
+  }, [open, isTop, dialogRef]);
 
   if (!open || !opts) return null;
 
@@ -106,7 +109,9 @@ export function ConfirmDialogHost() {
               ? "btn-primary !bg-signal-err"
               : "btn-primary"}
             onClick={() => notifyClose(true)}
-            autoFocus
+            // See CommandPalette: useModalFocus does the focusing so it can
+            // remember what to hand the keyboard back to.
+            data-modal-autofocus
           >
             {opts.confirmLabel ?? "OK"}
           </button>

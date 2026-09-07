@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useStore, mergeVars } from "@/lib/store";
-import { useTopLayer } from "@/lib/layers";
+import { useModalFocus, useTopLayer } from "@/lib/layers";
 import { executeRequest } from "@/lib/executor";
 import { secretsAsVars } from "@/lib/vault";
 import type { SignalResponse, SignalRequest, TestResult } from "@/lib/types";
@@ -18,8 +18,19 @@ export function Runner({ collectionId, onClose }: { collectionId: string; onClos
   const { collections, environments, activeEnvId, globals, secrets } = useStore();
   const col = collections[collectionId];
   // Registered as a layer so the request underneath does not answer keys
-  // through it, even though the runner has no shortcuts of its own.
-  useTopLayer(true);
+  // through it.
+  const isTop = useTopLayer(true);
+  // Every other modal in the app closes on Escape; this one did not, and its
+  // only way out was a Close button at the far end of a long result list.
+  const boxRef = useModalFocus<HTMLDivElement>(true);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isTop()) { e.preventDefault(); onClose(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isTop, onClose]);
   const [running, setRunning] = useState(false);
   const [rows, setRows] = useState<{ name: string; response?: SignalResponse; tests: TestResult[] }[]>([]);
 
@@ -74,9 +85,17 @@ export function Runner({ collectionId, onClose }: { collectionId: string; onClos
 
   return (
     <div className="fixed inset-0 z-40 bg-black/50 flex items-center justify-center">
-      <div className="w-[680px] bg-signal-panel border border-signal-border rounded shadow-2xl flex flex-col max-h-[80vh]">
+      <div
+        ref={boxRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="signal-runner-title"
+        className="w-[680px] bg-signal-panel border border-signal-border rounded shadow-2xl flex flex-col max-h-[80vh]"
+      >
         <div className="flex items-center px-3 py-2 border-b border-signal-border">
-          <div className="font-medium">Run collection: {col.name}</div>
+          {/* Announced as a dialog: a screen reader read the runner as a run of
+              plain text in the page, with no way to tell it had opened. */}
+          <div id="signal-runner-title" className="font-medium">Run collection: {col.name}</div>
           <button className="ml-auto btn" onClick={run} disabled={running}>{running ? "Running…" : "Run"}</button>
           <button className="ml-2 btn" onClick={onClose}>Close</button>
         </div>

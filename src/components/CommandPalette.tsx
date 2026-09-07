@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useStore } from "@/lib/store";
-import { anyLayerOpen, useTopLayer } from "@/lib/layers";
+import { anyLayerOpen, useModalFocus, useTopLayer } from "@/lib/layers";
 
 type Command = {
   id: string;
@@ -71,9 +71,17 @@ export function CommandPalette() {
       const col = store.collections[cid];
       if (!col) continue;
       for (const req of Object.values(col.requests)) {
+        // Qualified by collection: two requests called "Create order" in
+        // different collections were two identical rows, and picking the wrong
+        // one is silent — you only find out after you send it.
+        //
+        // Trimmed, because a name of spaces is not a name. " " rendered as a
+        // blank row you could still click, and `||` let it through.
+        const name = req.name.trim() || req.url.trim() || "(untitled)";
+        const where = col.name.trim();
         cmds.push({
           id: `open-${req.id}`,
-          label: `Open: ${req.name || req.url || "(untitled)"}`,
+          label: where ? `Open: ${where} / ${name}` : `Open: ${name}`,
           hint: req.method,
           run: () => store.openRequest(col.id, req.id),
         });
@@ -89,7 +97,10 @@ export function CommandPalette() {
   return <PaletteBody commands={commands} onClose={() => setCommandPaletteOpen(false)} />;
 }
 
+const MAX_ROWS = 25;
+
 function PaletteBody({ commands, onClose }: { commands: Command[]; onClose: () => void }) {
+  const boxRef = useModalFocus<HTMLDivElement>(true);
   const [query, setQuery] = useState("");
   // A palette is a keyboard feature: you open it, type, and press Enter. This
   // one had no highlight and no Enter, so the only way to run anything was to
@@ -103,9 +114,19 @@ function PaletteBody({ commands, onClose }: { commands: Command[]; onClose: () =
     selectedRef.current?.scrollIntoView?.({ block: "nearest" });
   }, [selected]);
 
-  const filtered = commands
-    .filter((c) => !query || c.label.toLowerCase().includes(query.toLowerCase()))
-    .slice(0, 25);
+  // Split on whitespace and match every word anywhere in the label. A trailing
+  // space — which you get for free from autocomplete, or from typing "get " and
+  // pausing — used to match nothing at all, and typing the two words you
+  // remember ("orders create") found nothing because they are not adjacent.
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const matches = commands.filter((c) => {
+    const hay = c.label.toLowerCase();
+    return terms.every((t) => hay.includes(t));
+  });
+  // The list is capped so a 500-request collection does not paint 500 rows.
+  // Silently, it looked like the request you were after did not exist.
+  const filtered = matches.slice(0, MAX_ROWS);
+  const hidden = matches.length - filtered.length;
 
   const move = (delta: number) =>
     setSelected((i) => Math.max(0, Math.min(i + delta, filtered.length - 1)));
@@ -125,14 +146,24 @@ function PaletteBody({ commands, onClose }: { commands: Command[]; onClose: () =
       // at z-50, so opening it over a dialog put an invisible input in charge
       // of the keyboard and everything typed went into it.
       className="fixed inset-0 z-[70] bg-black/60 flex items-start justify-center pt-24"
-      onClick={onClose}
+      // On mousedown, and only when the press and the release both landed on
+      // the backdrop. Dragging to select text in the query and releasing past
+      // the edge of the box counted as a click on the backdrop, so the palette
+      // shut and took the half-typed query with it.
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
+        ref={boxRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
         className="w-[560px] bg-signal-panel border border-signal-border rounded shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
       >
         <input
-          autoFocus
+          // Not `autoFocus`: React applies that during commit, before the
+          // focus trap can note where the cursor came from, and closing then
+          // had nowhere to put it back. useModalFocus focuses this instead.
+          data-modal-autofocus
           className="input rounded-none border-0 border-b border-signal-border"
           placeholder="type a command or request…"
           role="combobox"
@@ -181,6 +212,11 @@ function PaletteBody({ commands, onClose }: { commands: Command[]; onClose: () =
           ))}
           {!filtered.length && <div className="px-3 py-4 text-xs text-signal-muted">No matches.</div>}
         </div>
+        {hidden > 0 && (
+          <div className="px-3 py-2 text-xs text-signal-muted border-t border-signal-border">
+            {hidden} more {hidden === 1 ? "match" : "matches"} not shown — keep typing to narrow.
+          </div>
+        )}
       </div>
     </div>
   );
