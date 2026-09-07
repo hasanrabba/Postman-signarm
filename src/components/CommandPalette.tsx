@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useStore } from "@/lib/store";
+import { useTopLayer } from "@/lib/layers";
 
 type Command = {
   id: string;
@@ -13,6 +14,7 @@ type Command = {
 export function CommandPalette() {
   const store = useStore();
   const { commandPaletteOpen, setCommandPaletteOpen, openDraft } = store;
+  const isTop = useTopLayer(commandPaletteOpen);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -28,11 +30,13 @@ export function CommandPalette() {
         openDraft();
         setCommandPaletteOpen(false);
       }
-      if (e.key === "Escape") setCommandPaletteOpen(false);
+      // Only when the palette is the layer on top: one Escape used to dismiss
+      // both it and a confirm dialog underneath.
+      if (e.key === "Escape" && isTop()) setCommandPaletteOpen(false);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [commandPaletteOpen, setCommandPaletteOpen, openDraft]);
+  }, [commandPaletteOpen, setCommandPaletteOpen, openDraft, isTop]);
 
   const commands = useMemo<Command[]>(() => {
     const cmds: Command[] = [

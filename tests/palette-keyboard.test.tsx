@@ -108,3 +108,70 @@ describe("the palette opens clean", () => {
     expect((input as HTMLInputElement).value).toBe("");
   }, 30_000);
 });
+
+/* The palette, the confirm dialog and the runner each listen on window for
+   keys, and none of them knew about the others. */
+describe("only the modal on top answers a key", () => {
+  async function confirmThenPalette() {
+    const user = userEvent.setup();
+    useStore.getState().createMock("Billing");
+    render(<Home />);
+    await user.click(await screen.findByRole("button", { name: /^mocks$/i }));
+    await user.click(screen.getByRole("button", { name: /Delete mock server Billing/i }));
+    await screen.findByRole("button", { name: /^delete$/i });
+    await user.keyboard("{Control>}k{/Control}");
+    await screen.findByPlaceholderText(/type a command/i);
+    return user;
+  }
+  const confirmOpen = () => Boolean(screen.queryByRole("button", { name: /^delete$/i }));
+  const paletteOpen = () => Boolean(screen.queryByPlaceholderText(/type a command/i));
+  const mockCount = () => Object.keys(useStore.getState().mocks).length;
+
+  test("Escape closes the palette and leaves the confirm underneath", async () => {
+    const user = await confirmThenPalette();
+    await user.keyboard("{Escape}");
+    expect(paletteOpen()).toBe(false);
+    expect(confirmOpen()).toBe(true);
+  }, 30_000);
+
+  test("a second Escape then closes the confirm", async () => {
+    const user = await confirmThenPalette();
+    await user.keyboard("{Escape}{Escape}");
+    expect(confirmOpen()).toBe(false);
+    expect(mockCount()).toBe(1);          // cancelled, not confirmed
+  }, 30_000);
+
+  /* This one was destructive: Enter ran the highlighted command AND confirmed
+     the dialog underneath, so a keystroke meant for the palette deleted a
+     mock server. */
+  test("Enter runs the palette command without confirming the dialog", async () => {
+    const user = await confirmThenPalette();
+    const before = useStore.getState().tabs.length;
+    await user.keyboard("{Enter}");
+    expect(useStore.getState().tabs.length).toBe(before + 1);
+    expect(mockCount()).toBe(1);
+  }, 30_000);
+
+  test("with no palette over it, the confirm still answers Escape", async () => {
+    const user = userEvent.setup();
+    useStore.getState().createMock("Billing");
+    render(<Home />);
+    await user.click(await screen.findByRole("button", { name: /^mocks$/i }));
+    await user.click(screen.getByRole("button", { name: /Delete mock server Billing/i }));
+    await screen.findByRole("button", { name: /^delete$/i });
+    await user.keyboard("{Escape}");
+    expect(confirmOpen()).toBe(false);
+    expect(mockCount()).toBe(1);
+  }, 30_000);
+
+  test("and still answers Enter (control)", async () => {
+    const user = userEvent.setup();
+    useStore.getState().createMock("Billing");
+    render(<Home />);
+    await user.click(await screen.findByRole("button", { name: /^mocks$/i }));
+    await user.click(screen.getByRole("button", { name: /Delete mock server Billing/i }));
+    await screen.findByRole("button", { name: /^delete$/i });
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(mockCount()).toBe(0));
+  }, 30_000);
+});

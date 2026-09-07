@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useTopLayer } from "@/lib/layers";
 
 interface ConfirmOptions {
   title: string;
@@ -48,15 +49,21 @@ export function ConfirmDialogHost() {
     };
   }, [subscribe]);
 
+  const isTop = useTopLayer(open);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
+      // Only while this is the layer on top: with the command palette opened
+      // over it, Enter used to run the highlighted command AND confirm this
+      // dialog, so a keystroke meant for the palette deleted a mock server.
+      if (!isTop()) return;
       if (e.key === "Escape") { e.preventDefault(); notifyClose(false); }
       if (e.key === "Enter")  { e.preventDefault(); notifyClose(true); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
+  }, [open, isTop]);
 
   if (!open || !opts) return null;
 
