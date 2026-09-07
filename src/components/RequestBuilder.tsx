@@ -11,6 +11,7 @@ import { uid } from "@/lib/id";
 import { redactRequest } from "@/lib/secrets";
 import { secretsAsVars } from "@/lib/vault";
 import { hasUnresolvedVars, type VarScope } from "@/lib/variables";
+import { anyLayerOpen } from "@/lib/layers";
 
 const METHODS: Method[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 const BODY_MODES: BodyMode[] = ["none", "json", "text", "xml", "form-urlencoded", "form-data", "graphql"];
@@ -122,6 +123,11 @@ export function RequestBuilder({ tab }: { tab: TabState }) {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // These belong to the request underneath, so they stay out of the way
+      // while anything is over it: ⌘Enter typed at the open palette used to
+      // send a request nobody asked for, and with a confirm dialog up it both
+      // sent the request and answered the dialog.
+      if (anyLayerOpen()) return;
       const isMac = /Mac/.test(navigator.platform);
       if ((isMac ? e.metaKey : e.ctrlKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();

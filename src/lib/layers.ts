@@ -28,6 +28,18 @@ function pop(token: symbol): void {
 }
 
 /**
+ * Is any modal open at all?
+ *
+ * For handlers that belong to the page underneath rather than to a layer: the
+ * request builder's send and save fired through an open palette, so a ⌘Enter
+ * typed at the palette sent a request the user had not asked for — and with a
+ * confirm dialog up it both sent the request and answered the dialog.
+ */
+export function anyLayerOpen(): boolean {
+  return stack.length > 0;
+}
+
+/**
  * Register while `active`, and get back a predicate to call from inside a key
  * handler. It is a function rather than a boolean so the answer is read when
  * the key is pressed, not captured when the handler was attached.

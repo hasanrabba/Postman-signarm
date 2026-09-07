@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useStore, mergeVars } from "@/lib/store";
+import { useTopLayer } from "@/lib/layers";
 import { executeRequest } from "@/lib/executor";
 import { secretsAsVars } from "@/lib/vault";
 import type { SignalResponse, SignalRequest, TestResult } from "@/lib/types";
@@ -16,6 +17,9 @@ import type { SignalResponse, SignalRequest, TestResult } from "@/lib/types";
 export function Runner({ collectionId, onClose }: { collectionId: string; onClose: () => void }) {
   const { collections, environments, activeEnvId, globals, secrets } = useStore();
   const col = collections[collectionId];
+  // Registered as a layer so the request underneath does not answer keys
+  // through it, even though the runner has no shortcuts of its own.
+  useTopLayer(true);
   const [running, setRunning] = useState(false);
   const [rows, setRows] = useState<{ name: string; response?: SignalResponse; tests: TestResult[] }[]>([]);
 

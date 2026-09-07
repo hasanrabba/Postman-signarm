@@ -59,7 +59,12 @@ export function ConfirmDialogHost() {
       // dialog, so a keystroke meant for the palette deleted a mock server.
       if (!isTop()) return;
       if (e.key === "Escape") { e.preventDefault(); notifyClose(false); }
-      if (e.key === "Enter")  { e.preventDefault(); notifyClose(true); }
+      // Plain Enter only: ⌘Enter and Ctrl+Enter are the send gesture, not an
+      // answer to this dialog.
+      if (e.key === "Enter" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        notifyClose(true);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
