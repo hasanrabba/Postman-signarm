@@ -27,6 +27,21 @@ export default function Home() {
     void useStore.persist.rehydrate();
   }, []);
 
+  // The mocks themselves are persisted, but the registry that answers them
+  // lives in memory — in the route module on the web, in the Tokio server on
+  // the desktop. Without this, a restart left the sidebar listing a mock and
+  // all its routes while every request to it 404'd, and the UI looked exactly
+  // like a working one. Republished once per load, so the server always
+  // reflects what the app remembers.
+  useEffect(() => {
+    if (!hydrated) return;
+    const live = Object.values(useStore.getState().mocks).filter((m) => m.routes.length > 0);
+    if (live.length === 0) return;
+    void import("@/lib/transport").then(({ registerMock }) => {
+      for (const m of live) void registerMock(m.id, m.routes);
+    });
+  }, [hydrated]);
+
   useEffect(() => {
     if (hydrated && useStore.getState().tabs.length === 0) {
       openDraft({ name: "My first request", url: "https://httpbin.org/get" });
