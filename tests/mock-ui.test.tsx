@@ -13,8 +13,9 @@ import { useStore } from "@/lib/store";
 const registerMock = vi.fn();
 vi.mock("@/lib/transport", () => ({
   registerMock: (...a: unknown[]) => registerMock(...a),
+  mockUrlFor: vi.fn(async (id: string) => `http://localhost:3000/api/mock/${id}`),
   sendProxy: vi.fn(async () => ({ status: 200, statusText: "OK", headers: {}, body: "", elapsedMs: 1, sizeBytes: 0 })),
-  mockBaseUrl: vi.fn(async () => undefined),
+  mockBaseUrl: vi.fn(async () => "http://localhost:3000"),
 }));
 
 const RESET = {
@@ -72,5 +73,22 @@ describe("publishing a mock server", () => {
     registerMock.mockResolvedValue({ ok: true, count: 1 });
     await user.click(screen.getByRole("button", { name: /^publish/i }));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  }, 30_000);
+});
+
+/* A published mock is one the user has to point something at, and nothing
+   said where it answers. */
+describe("where the mock answers", () => {
+  test("the URL is shown after a successful publish", async () => {
+    registerMock.mockResolvedValue({ ok: true, count: 1 });
+    await publish();
+    const id = Object.keys(useStore.getState().mocks)[0];
+    expect(await screen.findByText(new RegExp(`/api/mock/${id}$`))).toBeInTheDocument();
+  }, 30_000);
+
+  test("and not after a failed one", async () => {
+    registerMock.mockResolvedValue({ ok: false, error: "nope" });
+    await publish();
+    expect(screen.queryByText(/Serving at/)).toBeNull();
   }, 30_000);
 });

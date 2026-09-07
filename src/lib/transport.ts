@@ -53,6 +53,20 @@ export async function registerMock(mockId: string, routes: unknown[]): Promise<{
   } catch (e) { return { ok: false, error: String(e) }; }
 }
 
+/**
+ * Where a published mock answers, ready to paste into a client.
+ *
+ * The two builds put the dispatcher in different places — the web build serves
+ * it from the app's own origin under /api/mock/, the desktop build from its
+ * own listener on a loopback port with the id as the first path segment — so
+ * the difference belongs here rather than in the UI, which was showing neither.
+ */
+export async function mockUrlFor(mockId: string): Promise<string | undefined> {
+  const base = await mockBaseUrl();
+  if (!base) return undefined;
+  return inTauri() ? `${base}/${mockId}` : `${base}/api/mock/${mockId}`;
+}
+
 export async function mockBaseUrl(): Promise<string | undefined> {
   if (inTauri()) {
     try { return await tauriInvoke<string>("mock_base_url", {}); }

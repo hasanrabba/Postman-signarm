@@ -616,13 +616,17 @@ function MockServerEditor({
   const METHODS: Method[] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
   const [syncing, setSyncing] = useState<"idle" | "ok" | "error">("idle");
   const [syncError, setSyncError] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
   const [expanded, setExpanded] = useState(false);
 
   const sync = async () => {
     setSyncing("idle");
     setSyncError("");
-    const { registerMock } = await import("@/lib/transport");
+    const { registerMock, mockUrlFor } = await import("@/lib/transport");
     const res = await registerMock(server.id, server.routes);
+    // Nothing told the user where the mock answers, so a published mock was
+    // one they had no way to call.
+    setBaseUrl(res.ok ? ((await mockUrlFor(server.id)) ?? "") : "");
     setSyncing(res.ok ? "ok" : "error");
     // The server says which route it refused and why. A bare ✗ left the user
     // to guess, and the checks that produce these messages reject a good deal
@@ -731,6 +735,15 @@ function MockServerEditor({
           </div>
           {syncError && (
             <div role="alert" className="text-[11px] text-signal-err">{syncError}</div>
+          )}
+          {baseUrl && (
+            <div className="text-[11px] text-signal-muted">
+              Serving at <code>{baseUrl}</code>
+              <button
+                className="ml-1 underline"
+                onClick={() => navigator.clipboard?.writeText(baseUrl)}
+              >copy</button>
+            </div>
           )}
         </div>
       )}
