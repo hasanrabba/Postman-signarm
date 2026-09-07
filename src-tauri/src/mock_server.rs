@@ -93,6 +93,31 @@ fn validate(routes: &[MockRoute]) -> Result<(), String> {
     Ok(())
 }
 
+/// Where the embedded mock server is listening, once it is.
+///
+/// The proxy blocks loopback, and this is the one loopback address it must
+/// let through: without it, sending a request at a mock you just published
+/// came back "Host 127.0.0.1 is blocked by the proxy", which reads like the
+/// mock is broken rather than like a deliberate guard. Exposed as a bare
+/// origin so the check can be an exact host:port match rather than a hole for
+/// all of loopback.
+pub static MOCK_ORIGIN: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// Is this the app's own mock server, and nothing else on loopback?
+pub fn is_mock_origin(scheme: &str, host: &str, port: Option<u16>) -> bool {
+    let Ok(guard) = MOCK_ORIGIN.read() else { return false };
+    let Some(base) = guard.as_ref() else { return false };
+    match base.strip_prefix("http://") {
+        Some(hostport) => {
+            let mut it = hostport.rsplitn(2, ':');
+            let base_port = it.next().and_then(|p| p.parse::<u16>().ok());
+            let base_host = it.next().unwrap_or("");
+            scheme == "http" && host == base_host && port == base_port
+        }
+        None => false,
+    }
+}
+
 #[derive(Default)]
 pub struct MockState {
     pub routes: RwLock<HashMap<String, Vec<MockRoute>>>,
@@ -137,6 +162,7 @@ pub async fn start(app: AppHandle) {
     };
     let base = format!("http://{}", addr);
     *state.base_url.write() = Some(base.clone());
+    if let Ok(mut g) = MOCK_ORIGIN.write() { *g = Some(base.clone()); }
     eprintln!("[mock] listening on {base}");
 
     loop {
@@ -354,6 +380,29 @@ mod tests {
         let body = out.split("\r\n\r\n").nth(1).unwrap_or("");
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(body);
         assert!(parsed.is_ok(), "404 body is not JSON: {body:?}");
+    }
+
+    /// MOCK_ORIGIN is process-wide and cargo runs tests in parallel threads.
+    static ORIGIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn only_the_app_s_own_mock_is_admitted() {
+        let _g = ORIGIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        *MOCK_ORIGIN.write().unwrap() = Some("http://127.0.0.1:54321".to_string());
+
+        assert!(is_mock_origin("http", "127.0.0.1", Some(54321)), "own mock refused");
+
+        // Everything else on loopback stays blocked.
+        assert!(!is_mock_origin("http", "127.0.0.1", Some(3000)), "another port admitted");
+        assert!(!is_mock_origin("http", "localhost", Some(54321)), "another host admitted");
+        assert!(!is_mock_origin("http", "127.0.0.2", Some(54321)), "another address admitted");
+        assert!(!is_mock_origin("https", "127.0.0.1", Some(54321)), "another scheme admitted");
+        assert!(!is_mock_origin("http", "127.0.0.1", None), "portless admitted");
+        assert!(!is_mock_origin("http", "169.254.169.254", Some(80)), "link-local admitted");
+
+        // And nothing at all is admitted before the server has bound.
+        *MOCK_ORIGIN.write().unwrap() = None;
+        assert!(!is_mock_origin("http", "127.0.0.1", Some(54321)), "admitted with no server");
     }
 
     #[test]

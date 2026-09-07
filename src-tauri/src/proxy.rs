@@ -207,6 +207,12 @@ fn check_url(u: &Url) -> Option<String> {
         Some(h) => h,
         None => return Some("URL has no host.".to_string()),
     };
+    // The app's own mock server is on loopback by design. Matched on the exact
+    // host AND port it bound to, so this admits that one listener and nothing
+    // else — and a redirect is re-checked against the same rule on every hop.
+    if crate::mock_server::is_mock_origin(u.scheme(), host, u.port_or_known_default()) {
+        return None;
+    }
     if should_block(host) {
         return Some(format!("Host {host} is blocked by the proxy."));
     }

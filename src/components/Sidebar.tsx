@@ -615,13 +615,19 @@ function MockServerEditor({
 }) {
   const METHODS: Method[] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
   const [syncing, setSyncing] = useState<"idle" | "ok" | "error">("idle");
+  const [syncError, setSyncError] = useState("");
   const [expanded, setExpanded] = useState(false);
 
   const sync = async () => {
     setSyncing("idle");
+    setSyncError("");
     const { registerMock } = await import("@/lib/transport");
     const res = await registerMock(server.id, server.routes);
     setSyncing(res.ok ? "ok" : "error");
+    // The server says which route it refused and why. A bare ✗ left the user
+    // to guess, and the checks that produce these messages reject a good deal
+    // more than they used to.
+    if (!res.ok) setSyncError(res.error || "The mock server refused these routes.");
   };
 
   const addRoute = () => {
@@ -723,6 +729,9 @@ function MockServerEditor({
               Publish{syncing === "ok" ? " ✓" : syncing === "error" ? " ✗" : ""}
             </button>
           </div>
+          {syncError && (
+            <div role="alert" className="text-[11px] text-signal-err">{syncError}</div>
+          )}
         </div>
       )}
     </div>

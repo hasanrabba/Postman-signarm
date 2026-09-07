@@ -39,8 +39,27 @@ function allowLocal(): boolean {
  * dispatcher; the check below stops every non-adversarial case and all
  * static bypasses (encoded literals, redirects, names pointing inward).
  */
-async function checkTarget(target: URL): Promise<string | null> {
+/**
+ * The app's own mock server is the one loopback address the guard has to let
+ * through. Without this, sending a request at a mock you just published came
+ * back "Host localhost is blocked by the proxy" — which reads like the mock is
+ * broken rather than like a deliberate guard.
+ *
+ * It is not a hole in that guard: the target must be the app's own origin AND
+ * under /api/mock/, which is the dispatcher and nothing else. A redirect is
+ * re-checked against the same rule on every hop.
+ */
+function isOwnMock(target: URL, self: URL | undefined): boolean {
+  return (
+    self !== undefined &&
+    target.origin === self.origin &&
+    target.pathname.startsWith("/api/mock/")
+  );
+}
+
+async function checkTarget(target: URL, self?: URL): Promise<string | null> {
   if (allowLocal()) return null;
+  if (isOwnMock(target, self)) return null;
   if (!/^https?:$/.test(target.protocol)) {
     return `Only http/https are allowed (got ${target.protocol}).`;
   }
@@ -162,7 +181,11 @@ export async function POST(req: NextRequest) {
   if (!/^https?:$/.test(target.protocol)) {
     return blocked(`Only http/https are allowed (got ${target.protocol}).`);
   }
-  const firstHopError = await checkTarget(target);
+  // Where this request came from, so the app's own mock dispatcher can be
+  // told apart from any other loopback address.
+  let self: URL | undefined;
+  try { self = new URL(req.url); } catch { self = undefined; }
+  const firstHopError = await checkTarget(target, self);
   if (firstHopError) return blocked(firstHopError, Date.now() - started);
 
   const controller = new AbortController();
@@ -200,7 +223,7 @@ export async function POST(req: NextRequest) {
       try { next = new URL(location, current); }
       catch { return blocked(`Invalid redirect target: ${location}`, Date.now() - started); }
 
-      const hopError = await checkTarget(next);
+      const hopError = await checkTarget(next, self);
       if (hopError) {
         return blocked(`Redirect ${res.status} to ${next.href} refused — ${hopError}`, Date.now() - started);
       }
