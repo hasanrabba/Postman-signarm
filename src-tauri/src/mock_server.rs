@@ -191,6 +191,13 @@ async fn handle(mut socket: TcpStream, state: Arc<MockState>) -> std::io::Result
     let target = parts.next().unwrap_or("/").to_string();
 
     let mut content_length = 0usize;
+    // A mock exists to be called from somewhere else — usually a web app on
+    // another port — and a browser will not let that app read the response
+    // without CORS headers, nor send anything beyond a simple request unless a
+    // preflight is answered.
+    let mut origin: Option<String> = None;
+    let mut acrm: Option<String> = None;
+    let mut acrh: Option<String> = None;
     let mut seen = 0usize;
     loop {
         if seen >= MAX_HEADER_LINES { break; }
@@ -202,8 +209,23 @@ async fn handle(mut socket: TcpStream, state: Arc<MockState>) -> std::io::Result
         if line == "\r\n" || line == "\n" { break; }
         if let Some(v) = line.strip_prefix_ignore_ascii_case("content-length:") {
             content_length = v.trim().parse().unwrap_or(0);
+        } else if let Some(v) = line.strip_prefix_ignore_ascii_case("origin:") {
+            origin = Some(v.trim().to_string());
+        } else if let Some(v) = line.strip_prefix_ignore_ascii_case("access-control-request-method:") {
+            acrm = Some(v.trim().to_string());
+        } else if let Some(v) = line.strip_prefix_ignore_ascii_case("access-control-request-headers:") {
+            acrh = Some(v.trim().to_string());
         }
     }
+    // These came off the wire and go straight back onto one, so anything that
+    // could end a header line early is dropped rather than echoed.
+    let echo = |v: &Option<String>, fallback: &str| -> String {
+        match v {
+            Some(x) if is_safe_header_value(x) => x.clone(),
+            _ => fallback.to_string(),
+        }
+    };
+    let allow_origin = echo(&origin, "*");
     if content_length > 0 {
         // Drain, never allocate to a caller-supplied length: `Content-Length:
         // 99999999999` would otherwise ask for 100 GB up front.
@@ -228,7 +250,9 @@ async fn handle(mut socket: TcpStream, state: Arc<MockState>) -> std::io::Result
             let body = r.body.clone();
             let mut resp = format!("HTTP/1.1 {status} {reason}\r\n");
             let mut have_ct = false;
+            let mut have_cors = false;
             for (k, v) in &r.headers {
+                if k.eq_ignore_ascii_case("access-control-allow-origin") { have_cors = true; }
                 if k.eq_ignore_ascii_case("content-length") { continue; }
                 // Anything that could end the header block early is dropped
                 // rather than written: a value carrying CRLF used to inject
@@ -240,10 +264,35 @@ async fn handle(mut socket: TcpStream, state: Arc<MockState>) -> std::io::Result
                 resp.push_str(&format!("{k}: {v}\r\n"));
             }
             if !have_ct { resp.push_str("Content-Type: application/octet-stream\r\n"); }
+            // The route's own header wins: a user who sets one means it.
+            if !have_cors {
+                resp.push_str(&format!("Access-Control-Allow-Origin: {allow_origin}\r\n"));
+                resp.push_str("Access-Control-Allow-Credentials: true\r\n");
+                resp.push_str("Access-Control-Expose-Headers: *\r\n");
+                resp.push_str("Vary: Origin\r\n");
+            }
             resp.push_str(&format!("Content-Length: {}\r\n", body.len()));
             resp.push_str("Connection: close\r\n\r\n");
             wr.write_all(resp.as_bytes()).await?;
             wr.write_all(body.as_bytes()).await?;
+        }
+        // An unmatched OPTIONS carrying Access-Control-Request-Method is a
+        // preflight, not a missing route. A route registered FOR options still
+        // wins, because it is matched above.
+        None if method == "OPTIONS" && acrm.is_some() => {
+            let allow_headers = echo(&acrh, "*");
+            let resp = format!(
+                "HTTP/1.1 204 No Content\r\n\
+                 Access-Control-Allow-Origin: {allow_origin}\r\n\
+                 Access-Control-Allow-Credentials: true\r\n\
+                 Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS\r\n\
+                 Access-Control-Allow-Headers: {allow_headers}\r\n\
+                 Access-Control-Max-Age: 600\r\n\
+                 Vary: Origin\r\n\
+                 Content-Length: 0\r\n\
+                 Connection: close\r\n\r\n"
+            );
+            wr.write_all(resp.as_bytes()).await?;
         }
         None => {
             // Built rather than formatted: the id, method and path come
@@ -257,7 +306,10 @@ async fn handle(mut socket: TcpStream, state: Arc<MockState>) -> std::io::Result
             })
             .to_string();
             let resp = format!(
-                "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\n\
+                 Access-Control-Allow-Origin: {}\r\nVary: Origin\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                allow_origin,
                 body.len()
             );
             wr.write_all(resp.as_bytes()).await?;
@@ -333,6 +385,11 @@ mod tests {
     /// Serve one request through the real connection handler over a real
     /// socket, and return exactly what the client read.
     async fn serve_once(state: Arc<MockState>, target: &str) -> String {
+        serve_raw(state, &format!("GET {target} HTTP/1.1\r\nHost: x\r\n\r\n")).await
+    }
+
+    /// The same, for a request whose exact bytes matter.
+    async fn serve_raw(state: Arc<MockState>, raw: &str) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let st = state.clone();
@@ -341,8 +398,7 @@ mod tests {
             let _ = handle(socket, st).await;
         });
         let mut c = TcpStream::connect(addr).await.unwrap();
-        c.write_all(format!("GET {target} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes())
-            .await.unwrap();
+        c.write_all(raw.as_bytes()).await.unwrap();
         let mut buf = Vec::new();
         let _ = c.read_to_end(&mut buf).await;
         String::from_utf8_lossy(&buf).to_string()
@@ -365,6 +421,54 @@ mod tests {
         assert!(!out.contains("X-Injected"), "injected a header: {out:?}");
         assert!(!out.contains("PWNED"), "injected a body: {out:?}");
         assert!(out.ends_with("real body"), "did not serve the real body: {out:?}");
+    }
+
+    /// Without these a browser app on another port saw a CORS error rather
+    /// than the mock's response, and a preflight got a 404.
+    #[tokio::test]
+    async fn a_browser_app_on_another_port_can_read_the_response() {
+        let out = serve_raw(
+            with_route(route(HashMap::new(), 200, "hi")),
+            "GET /m/z HTTP/1.1\r\nHost: x\r\nOrigin: http://localhost:5173\r\n\r\n",
+        ).await;
+        assert!(out.contains("Access-Control-Allow-Origin: http://localhost:5173"), "{out:?}");
+        assert!(out.contains("Access-Control-Expose-Headers: *"), "{out:?}");
+        assert!(out.ends_with("hi"), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn a_preflight_is_answered_instead_of_404ing() {
+        let out = serve_raw(
+            with_route(route(HashMap::new(), 200, "hi")),
+            "OPTIONS /m/z HTTP/1.1\r\nHost: x\r\nOrigin: http://localhost:5173\r\n\
+             Access-Control-Request-Method: POST\r\n\
+             Access-Control-Request-Headers: content-type\r\n\r\n",
+        ).await;
+        assert!(out.starts_with("HTTP/1.1 204"), "{out:?}");
+        assert!(out.contains("Access-Control-Allow-Methods: GET, POST"), "{out:?}");
+        assert!(out.contains("Access-Control-Allow-Headers: content-type"), "{out:?}");
+    }
+
+    /// The Origin comes off the wire and goes straight back onto one.
+    #[tokio::test]
+    async fn a_hostile_origin_cannot_forge_a_header() {
+        let out = serve_raw(
+            with_route(route(HashMap::new(), 200, "hi")),
+            "GET /m/z HTTP/1.1\r\nHost: x\r\nOrigin: http://e.test\rX-Injected: yes\r\n\r\n",
+        ).await;
+        assert!(!out.contains("X-Injected"), "origin echoed a forged header: {out:?}");
+    }
+
+    #[tokio::test]
+    async fn a_cors_header_the_user_set_is_not_overridden() {
+        let mut h = HashMap::new();
+        h.insert("Access-Control-Allow-Origin".to_string(), "https://only.test".to_string());
+        let out = serve_raw(
+            with_route(route(h, 200, "hi")),
+            "GET /m/z HTTP/1.1\r\nHost: x\r\nOrigin: http://localhost:5173\r\n\r\n",
+        ).await;
+        assert!(out.contains("Access-Control-Allow-Origin: https://only.test"), "{out:?}");
+        assert!(!out.contains("Allow-Origin: http://localhost:5173"), "{out:?}");
     }
 
     #[tokio::test]

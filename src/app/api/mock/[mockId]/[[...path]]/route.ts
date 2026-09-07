@@ -18,6 +18,26 @@ export async function PATCH(req: NextRequest, ctx: Ctx) { return handle(req, ctx
 export async function HEAD(req: NextRequest, ctx: Ctx) { return handle(req, ctx); }
 export async function OPTIONS(req: NextRequest, ctx: Ctx) { return handle(req, ctx); }
 
+/**
+ * A mock server exists to be pointed at from somewhere else — usually a web
+ * app on another port — and a browser will not let that app read a response
+ * without these. Without them the mock answered 200 and the calling app saw a
+ * CORS error, and a preflight 404'd, so anything with a JSON content type or a
+ * custom header could not reach it at all.
+ *
+ * The origin is echoed rather than starred so a caller sending credentials is
+ * not refused; there is nothing to protect here beyond the canned responses
+ * the user wrote themselves.
+ */
+function cors(req: NextRequest): Record<string, string> {
+  return {
+    "Access-Control-Allow-Origin": req.headers.get("origin") ?? "*",
+    "Access-Control-Allow-Credentials": "true",
+    "Access-Control-Expose-Headers": "*",
+    Vary: "Origin",
+  };
+}
+
 async function handle(req: NextRequest, ctx: Ctx) {
   const { mockId, path = [] } = await ctx.params;
   const routes = mocks[mockId] || [];
@@ -32,9 +52,24 @@ async function handle(req: NextRequest, ctx: Ctx) {
       r.path === mockPath
   );
   if (!match) {
+    // An unmatched OPTIONS carrying Access-Control-Request-Method is a
+    // preflight, not a missing route. A route registered FOR options still
+    // wins, because it is matched above.
+    if (req.method === "OPTIONS" && req.headers.get("access-control-request-method")) {
+      return new NextResponse(null, {
+        status: 204,
+        headers: {
+          ...cors(req),
+          "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS",
+          "Access-Control-Allow-Headers":
+            req.headers.get("access-control-request-headers") ?? "*",
+          "Access-Control-Max-Age": "600",
+        },
+      });
+    }
     return NextResponse.json(
       { error: "No matching mock route", method: req.method, path: mockPath, mockId },
-      { status: 404 }
+      { status: 404, headers: cors(req) }
     );
   }
   // Clamped: a route stored before the limit existed could still hold ten
@@ -49,8 +84,11 @@ async function handle(req: NextRequest, ctx: Ctx) {
   // A header holding a line break, or a name that is not a token, throws while
   // the response is constructed — a 500 with nothing to say why. Serve what is
   // valid and leave out what is not.
+  // The route's own headers win: a user who sets Access-Control-Allow-Origin
+  // themselves means it.
+  const headers = { ...cors(req), ...safeHeaders(match.headers) };
   return new NextResponse(typeof match.body === "string" ? match.body : String(match.body ?? ""), {
     status,
-    headers: safeHeaders(match.headers),
+    headers,
   });
 }
