@@ -402,6 +402,17 @@ export const useStore = create<Store>()(
               updatedAt: Date.now(),
             },
           },
+          // A request open in a tab exists twice: here, and as that tab's
+          // draft. Renaming it in the sidebar changed only the stored copy,
+          // and saving writes the draft over it wholesale — so the next ⌘S,
+          // or any later edit followed by Save, quietly put the old name back.
+          // The tab strip and the name field went on showing it too.
+          //
+          // Not marked dirty: the two copies now agree, which is the opposite
+          // of an unsaved change.
+          tabs: s.tabs.map((t) =>
+            t.draft.id === requestId ? { ...t, draft: { ...t.draft, name } } : t
+          ),
         };
       }),
       duplicateRequest: (collectionId, requestId) => {
