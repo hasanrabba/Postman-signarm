@@ -8,6 +8,9 @@ const isTauri = process.env.SIGNAL_TARGET === "tauri";
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   typedRoutes: true,
+  // Builds check the application; `npm run typecheck` checks everything,
+  // tests included. See tsconfig.build.json for why they are separate.
+  typescript: { tsconfigPath: "tsconfig.build.json" },
   ...(isTauri
     ? {
         output: "export",

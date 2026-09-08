@@ -24,3 +24,4 @@ tests/_*
 # snippet execution harness scratch (cleaned up by the test, ignored if it dies)
 .snip-*
 .snipd-*
+.s-*

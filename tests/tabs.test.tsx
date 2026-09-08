@@ -46,8 +46,6 @@ const tabFor = (label: string): HTMLElement =>
 /** A tab's close control, found by its glyph so this works on either markup. */
 const closerFor = (label: string): HTMLElement =>
   within(tabFor(label).parentElement ?? tabFor(label)).getAllByText("\u00d7")[0] as HTMLElement;
-const tabButtons = () =>
-  Array.from(document.querySelectorAll<HTMLElement>('[role="tablist"] [role="tab"]'));
 const S = () => useStore.getState();
 
 /**

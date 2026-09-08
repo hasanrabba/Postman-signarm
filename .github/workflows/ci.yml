@@ -1,0 +1,89 @@
+# Nothing ran this project's tests except a person remembering to.
+#
+# Two jobs, because the app ships two ways and they break independently: the
+# web build serves the API routes from Next, and the desktop build replaces
+# them with the Rust backend and needs a static export that has none.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A new push supersedes the run in progress on the same ref.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: Web — lint, types, tests, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      # Stricter than the local script on purpose: `npm run lint` stays
+      # advisory while you work, and CI holds the line at zero. The committed
+      # tree is at zero today, so this starts green.
+      - name: Lint
+        run: npm run lint -- --max-warnings 0
+
+      # Covers tests/ as well; the production builds deliberately do not.
+      # See tsconfig.build.json.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm run test:ui
+
+      - name: Build
+        run: npm run build
+
+  desktop:
+    name: Desktop — static export and Rust tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Tauri v2 links against the system webview on Linux, so the crate does
+      # not compile — not even for `cargo test` — without these.
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev librsvg2-dev \
+            libayatana-appindicator3-dev libxdo-dev patchelf
+
+      - run: npm ci
+
+      # tauri::generate_context! reads frontendDist ("../out") at compile time
+      # and panics if it is missing, so the export has to exist before any
+      # cargo command — including cargo test.
+      - name: Static export
+        run: npm run build:static
+
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Rust lints
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
